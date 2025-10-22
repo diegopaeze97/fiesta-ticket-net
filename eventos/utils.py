@@ -28,6 +28,7 @@ def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, t
         # Genera un token de VALIDACION DE LA INSCRIPCION
 
         qr_link = sale_data['link_reserva']
+        print(f"QR Link: {qr_link}")
 
         recipient = user.Email
 
