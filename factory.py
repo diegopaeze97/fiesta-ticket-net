@@ -51,8 +51,6 @@ def createApp():
     app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')  # Tu contraseña
     app.config['MAIL_USE_TLS'] = True  # Usar TLS (True o False según corresponda)
     app.config['MAIL_USE_SSL'] = False  # Usar SSL (True o False según corresponda)
-    app.config['IMGUR_CLIENT_ID'] = os.environ.get('IMGUR_CLIENT_ID')
-    app.config['IMGUR_CLIENT_SECRET'] = os.environ.get('IMGUR_CLIENT_SECRET')
 
     # Credenciales de API de Fiesta Ticket
     app.config['FIESTATRAVEL_TICKERA_USERNAME'] = os.environ.get('FIESTATRAVEL_TICKERA_USERNAME')
@@ -62,27 +60,7 @@ def createApp():
     #taxes 
     app.config['IVA_PERCENTAGE'] = int(os.environ.get('IVA_PERCENTAGE', 0))  # Porcentaje de impuestos, por defecto 0 si no está definido
 
-    #apis
-    app.config['rapidapi_key'] = os.environ.get('rapidapi_key') 
-
-    # Configura Monday
-    app.config['monday_accessToken'] = os.getenv('monday_accessToken') 
-
-    # Configura whatsapp
-    app.config['WHA_SECURITY_TOKEN'] = os.getenv('WHA_SECURITY_TOKEN') 
-    app.config['WHATSAPP_TOKEN'] = os.getenv('WHATSAPP_TOKEN') 
-    app.config['whatsapp_url'] = os.getenv('whatsapp_url') 
-
     app.config['WEBSITE_FRONTEND_TICKERA'] = os.getenv('WEBSITE_FRONTEND_TICKERA')
-
-        # Configurar GoogleSheets
-    # Cargar las credenciales desde el archivo JSON
-    import json
-    with open('la-fiesta-del-golf-app-4364c8ea2c28.json', 'r') as f:
-        google_creds = json.load(f)
-
-    app.config['google_sheets_credentials'] = google_creds
-    app.config['google_sheet_id'] = os.getenv('google_sheet_id') 
 
     db.init_app(app)
     jwt.init_app(app)
