@@ -138,7 +138,7 @@ class Ticket(db.Model):
     customer_id = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True) # Enlaza con  tabla Customer
     creation_date = Column(Date, nullable=False, default=db.func.current_date())
     emission_date = Column(Date, nullable=True)
-    canjeo_date = Column(Date, nullable=True)
+    canjeo_date = Column(DateTime, nullable=True)
     created_by = Column(Integer)
     last_modified = Column(Date, nullable=False, default=db.func.current_date())
     fee = Column(Integer, default=0)  # Fee de Tickera

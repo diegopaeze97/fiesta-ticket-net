@@ -43,8 +43,6 @@ ALLOWED_EXTENSIONS = {'csv', 'xls', 'xlsx'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-today = datetime.now()  # Define 'today' as the current date and time
-
 @backend.route('/login', methods=['POST'])
 def login():
     email = request.json.get("email")
@@ -339,6 +337,7 @@ def block_user():
 
     user_id = get_jwt().get("id")
     customerId = request.json.get("customerId")
+    today = datetime.utcnow().date()
     
     try:
         user = db.session.query(EventsUsers).filter(EventsUsers.CustomerID == int(customerId)).one_or_none()
@@ -1655,40 +1654,6 @@ def block_tickets():
         return jsonify({"message": "Error al registrar la venta o pago", "status": "error"}), 500
     finally:
         db.session.close()
-    
-@backend.route('/canjear-ticket', methods=['GET'])  #canjeo de tickets
-@roles_required(allowed_roles=["admin", "tiquetero"])
-def canjear_ticket():
-    ticket_id = request.args.get('query', '')
-    try:
-        if ticket_id:
-            ticket = Ticket.query.filter(
-                and_(
-                    Ticket.ticket_id == int(ticket_id),
-                )
-            ).one_or_none()
-
-            if not ticket:
-                return jsonify({'message': 'Ticket no encontrado', 'status': 'error', 'ticket_status': 'missing'}), 400
-
-            if ticket.availability_status == 'cancelado':
-                return jsonify({'message': 'Ticket cancelado, por favor contacta a un administrador', 'status': 'error', 'ticket_status': 'broken'}), 400
-
-            if ticket.availability_status == 'Canjeado':
-                return jsonify({'message': 'Este Ticket ya fue canjeado', 'status': 'ok', 'ticket_status': 'used'}), 400
-
-            ticket.availability_status = 'Canjeado'
-            ticket.canjeo_date = today
-            db.session.commit()
-
-            return jsonify({'message': 'Ticket canjeado exitosamente', 'status': 'ok', 'ticket_status': 'used'}), 200
-
-        else:
-            return jsonify({'message': 'Ticket no encontrado', 'status': 'ok', 'ticket_status': 'missing'}), 400
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error al buscar ticket: {e}")
-        return jsonify({'message': 'Error al buscar ticket', 'status': 'error'}), 500
 
 @backend.route('/customize-reservation', methods=['GET']) #endpoint para recopilar informacion de la reserva (admin)
 @roles_required(allowed_roles=["admin", "tiquetero"])
@@ -2483,6 +2448,7 @@ def modify_reservation():
     try:
         user_id = get_jwt().get("id")
         user_role = get_jwt().get("role")
+        today = datetime.utcnow().date()
 
         # 1. Extraer datos del formulario
         sale_id = request.args.get('query', '')

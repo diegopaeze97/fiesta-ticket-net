@@ -1002,7 +1002,7 @@ def ticket():
                 'ticket_status': 'valid'
             }
 
-            fee = round(ticket.fee/100, 2) if ticket.fee else 0 if ticket.fee else 0
+            fee = ticket.fee if ticket.fee else 0 if ticket.fee else 0
             discount = round(ticket.discount, 2) if ticket.discount else 0
 
             # si tiene rol permitido, añade info adicional
@@ -1102,3 +1102,38 @@ def view_ticket():
         db.session.rollback()
         logging.error(f"Error al buscar reserva: {e}")
         return jsonify({'message': 'Error al buscar reserva', 'status': 'error'}), 500
+    
+@events.route('/canjear-ticket', methods=['GET'])  #canjeo de tickets
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def canjear_ticket():
+    ticket_id = request.args.get('query', '')
+    try:
+        now = datetime.now(timezone.utc)
+        if ticket_id:
+            ticket = Ticket.query.filter(
+                and_(
+                    Ticket.ticket_id == int(ticket_id),
+                )
+            ).one_or_none()
+
+            if not ticket:
+                return jsonify({'message': 'Ticket no encontrado', 'status': 'error', 'ticket_status': 'missing'}), 400
+
+            if ticket.availability_status == 'cancelado':
+                return jsonify({'message': 'Ticket cancelado, por favor contacta a un administrador', 'status': 'error', 'ticket_status': 'broken'}), 400
+
+            if ticket.availability_status == 'Canjeado':
+                return jsonify({'message': 'Este Ticket ya fue canjeado', 'status': 'ok', 'ticket_status': 'used'}), 400
+
+            ticket.availability_status = 'Canjeado'
+            ticket.canjeo_date = now
+            db.session.commit()
+
+            return jsonify({'message': 'Ticket canjeado exitosamente', 'status': 'ok', 'ticket_status': 'used'}), 200
+
+        else:
+            return jsonify({'message': 'Ticket no encontrado', 'status': 'ok', 'ticket_status': 'missing'}), 400
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al buscar ticket: {e}")
+        return jsonify({'message': 'Error al buscar ticket', 'status': 'error'}), 500
