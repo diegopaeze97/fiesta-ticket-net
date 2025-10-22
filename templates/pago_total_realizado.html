@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solicitud de pago - Fiesta Ticket</title>
+</head>
+
+<body style="margin:0; padding:0; background-color:#f0f0f0; font-family: 'Arial', sans-serif;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#f0f0f0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" cellpadding="0" cellspacing="0" border="0"
+                    style="max-width:600px; margin:0 auto; border-collapse:collapse; background-color:#ffffff; border-radius:12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);">
+
+                    <tr>
+                        <td style="padding:1px; border-radius:12px;
+                            /* Degradado simulado para la franja superior */
+                            background: linear-gradient(to right, #ff6b8e 0%, #a26bff 100%);">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff"
+                                style="border-collapse:collapse; border-radius:12px;">
+
+                                <tr>
+                                    <td align="center" style="padding:30px 0 20px 0;">
+                                        <h1 style="color: #6a0dad; margin: 0; font-size: 28px; letter-spacing: 2px;">
+                                            FIESTA TICKET</h1>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td align="center" style="padding:10px 30px;">
+                                        <h2 style="color:#333; margin-bottom:10px; font-size: 24px;">🎉
+                                            {{sale_data['title']}}</h2>
+                                        <p style="color:#a26bff; margin-top:0; font-size: 16px; font-weight: bold;">
+                                            {{sale_data['subtitle']}}</p>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #ff6b8e; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 30px;">
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Boletos Reservados:</h3>
+                                        <p style="margin:5px 0;">Evento: <strong>{{sale_data['event']}}</strong></p>
+                                        <p style="margin:5px 0;">Lugar: {{sale_data['venue']}}</p>
+                                        <p style="margin:5px 0 15px 0;">Fecha: <strong>{{sale_data['date']}} -
+                                                {{sale_data['hour']}}</strong></p>
+                                        <div style="font-size:14px; color:#555;">
+                                            {% for row in Tickets %}
+                                            <p>
+                                                <span style="font-weight:bold;">
+                                                    Seccion: {{ row['section'] }} - {{ row['row'] }}{{ row['number'] }}
+                                                    ({{ (row['price']*sale_data['exchange_rate_bsd']) | round(2) }} BsD)
+                                                </span>
+                                            </p>
+                                            {% endfor %}
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+
+                                <tr>
+                                    <td style="padding:0 30px 20px 30px;">
+                                        <h3 style="color:#333; font-size: 18px;">Detalles del Abono</h3>
+                                        <table width="100%" cellspacing="0" cellpadding="8"
+                                            style="font-size:15px; background-color:#f9f9f9; border-radius:8px;">
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;"># De Control:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    000000{{sale_data['sale_id']}}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">Subtotal:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{sale_data['net_amount']}} BsD
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{sale_data['iva_amount']}} BsD</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">Total:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{sale_data['total_abono']}} BsD</td>
+                                            </tr>
+                                        </table>
+
+                                        <p style="margin:15px 0 5px 0;">Método de Pago:
+                                            <strong>{{sale_data['payment_method']}}</strong>
+                                        </p>
+                                        <p style="margin:5px 0 15px 0;">Referencia: {{sale_data['reference']}}</p>
+
+                                        <ul style="font-size:14px; padding-left:20px; color:#555;">
+                                            <li>Una vez confirmado el pago total, te enviaremos tus boletos electrónicos
+                                                a este correo; por favor, verifica también la bandeja de entrada y la
+                                                carpeta de spam.</li>
+                                        </ul>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td align="center" style="padding:10px 30px 30px 30px;">
+                                        <p style="margin:0; color:#555; font-size:16px;">CÓDIGO DE RESERVA</p>
+                                        <h1
+                                            style="letter-spacing:4px; font-size: 32px; color: #6a0dad; margin: 5px 0 20px 0; background-color:#fff0f5; padding: 5px 15px; border-radius: 4px; border: 1px dashed #ff6b8e;">
+                                            {{sale_data['localizador']}}</h1>
+
+                                        <a href="{{sale_data['link_reserva']}}" style="
+                                                background: linear-gradient(to right, #ff6b8e 0%, #a26bff 100%);
+                                                color:#fff;
+                                                text-decoration:none;
+                                                padding:14px 30px;
+                                                border-radius:25px;
+                                                display:inline-block;
+                                                font-weight:bold;
+                                                font-size: 16px;
+                                                box-shadow: 0 4px 6px rgba(162, 107, 255, 0.4);">
+                                            Ver actualizaciones de mi reserva
+                                        </a>
+
+                                        <p style="font-size:13px; color:#555; margin-top:20px;">
+                                            ⚠️ Si deseas modificar o cancelar tu reserva, por favor contáctanos antes de
+                                            realizar cualquier pago adicional.
+                                        </p>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td align="center" bgcolor="#f5f5f5"
+                                        style="padding:20px 30px; border-bottom-left-radius:12px; border-bottom-right-radius:12px;">
+                                        <p style="font-size:12px; color:#777; line-height: 1.5;">
+                                            Si no recibimos la confirmación del abono dentro del plazo establecido, nos
+                                            reservamos
+                                            el derecho de liberar las entradas. Los boletos se emitirán únicamente una
+                                            vez verificado
+                                            el pago total. El abono realizado <strong style="color: #ff6b8e;">no es
+                                                reembolsable</strong>.
+                                        </p>
+                                        <table cellspacing="0" cellpadding="5" style="margin-top:10px;">
+                                            <tr>
+                                                <td><a href="https://wa.me/584223437828" style="text-decoration: none;">
+                                                        <img src="https://digitalasset.intuit.com/render/content/dam/intuit/mc-fe/en_us/images/email/social-block-icons/whatsapp-filled-color-80.png"
+                                                            width="28" alt="WhatsApp" style="display:block;" /></a></td>
+                                            </tr>
+                                        </table>
+                                        <p
+                                            style="font-size: 14px; color: #6a0dad; font-weight: bold; margin-top: 10px;">
+                                            FIESTA TICKET
+                                        </p>
+                                        <p
+                                            style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                            LA MATUNGA, C.A. - J-500318928
+                                        </p>
+                                        <p
+                                            style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                            Calle Rio Caura, edificio Parque Humbolt, piso 2, ofic. 04
+                                            Urb. Parque Humbolt, Caracas, estado Miranda
+                                            Zona postal 1080 / Telefono: +58 414 5229768
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
