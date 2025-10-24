@@ -337,7 +337,8 @@ def block_user():
 
     user_id = get_jwt().get("id")
     customerId = request.json.get("customerId")
-    today = datetime.utcnow().date()
+    now_utc = datetime.now(timezone.utc)
+    cutoff_date = now_utc + timedelta(days=30)
     
     try:
         user = db.session.query(EventsUsers).filter(EventsUsers.CustomerID == int(customerId)).one_or_none()
@@ -346,8 +347,8 @@ def block_user():
             return jsonify(message='El usuario no existe.'), 409  # 409 Conflicto
         user.status = 'suspended'
 
-        #eliminar el token activo del usuario
-        active_tokens = db.session.query(Active_tokens).filter(and_(Active_tokens.CustomerID == user.CustomerID, Active_tokens.ExpiresAt - today > 30)).all()
+        # eliminar el token activo del usuario (tokens que expiran en más de 30 días)
+        active_tokens = db.session.query(Active_tokens).filter(and_(Active_tokens.CustomerID == user.CustomerID, Active_tokens.ExpiresAt > cutoff_date)).all()
         if active_tokens:
             for token in active_tokens:
                 # Guardar el JTI en la base de datos

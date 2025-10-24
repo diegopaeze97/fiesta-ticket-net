@@ -42,6 +42,8 @@ def register():
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
     
+    print(cedula)
+    
     if not utils.cedula_pattern.match(cedula.upper()):
         return jsonify(message='Numero de cedula invalido'), 400
     

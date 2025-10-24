@@ -4,6 +4,7 @@ import qrcode
 from io import BytesIO
 from flask_mail import Message
 from extensions import db, mail
+from models import EventsUsers
 import logging
 import uuid
 import re
@@ -71,6 +72,91 @@ def sendnotification_for_PaymentStatus(config, db, mail, user, Tickets, sale_dat
         msg.html = msg_html
 
         mail.send(msg)
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
+        db.session.rollback()   
+
+def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
+    try:
+        recipient = user.Email
+
+        subject = f'Tu reserva para {sale_data["event"]} - Fiesta Ticket'
+
+        msg = Message(subject, sender=config["MAIL_USERNAME"], recipients=[recipient])
+        msg_html = render_template('actualizacion_de_status_pago.html', Tickets=Tickets, sale_data=sale_data)
+        msg.html = msg_html
+
+        mail.send(msg)
+
+        #ahora se notifica a los admins y tiqueteros
+        admin_subject = f'Notificación de bloqueo de reserva para {sale_data["event"]} - Fiesta Ticket'
+
+        admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
+        admin_recipients = [admin.Email for admin in admins]
+
+        message_admin = (
+            f'🚨 **RESERVA REALIZADA - REQUIERE ATENCIÓN INMEDIATA** 🚨\n\n'
+            f'Hola Equipo,\n\n'
+            f'Se ha **bloqueado la reserva** (ID de Venta: {sale_data.get("sale_id", "N/A")}) '
+            f'del usuario **{user.Email}** para el evento **{sale_data["event"]}**.\n\n'
+            f'---\n'
+            f'## 👤 Detalles del Usuario\n'
+            f'- **Nombre Completo:** {user.FirstName} {user.LastName}\n'
+            f'- **Email:** {user.Email}\n'
+            f'- **Teléfono:** {user.PhoneNumber or "No registrado"}\n'
+            f'- **ID de Cliente:** {user.CustomerID}\n'
+            f'---\n'
+            f'## 🎫 Detalles de la Reserva\n'
+            f'- **Evento:** {sale_data["event"]} ({sale_data["venue"]})\n'
+            f'- **Fecha y Hora:** {sale_data["date"]} a las {sale_data["hour"]}\n'
+            f'- **Localizador (ID de Venta):** {sale_data.get("localizador", "N/A")} / {sale_data.get("sale_id", "N/A")}\n'
+            f'- **Cantidad de Boletos:** {len(Tickets)}\n\n'
+            f'---\n'
+            f'## 🎟️ Detalles de los Boletos ({len(Tickets)} en total)\n'
+        )
+
+        # ----------------------------------------------------
+        # Bloque de ITERACIÓN DE TICKETS
+        # ----------------------------------------------------
+        if Tickets:
+            for i, ticket in enumerate(Tickets, 1):
+                # Formateo la información de cada ticket
+                detalle_ticket = (
+                    f'    {i}. ID: {ticket["ticket_id"]} | '
+                    f'Sección: {ticket["section"].upper()} | '
+                    f'Fila/Número: {ticket["row"]}/{ticket["number"]} | '
+                    f'Precio: ${ticket["price"]}\n'
+                )
+                # Concateno al mensaje principal
+                message_admin += detalle_ticket
+        else:
+            # Caso de contingencia si la lista estuviera vacía por alguna razón
+            message_admin += '    (No se pudo recuperar la información detallada de los boletos.)\n'
+
+        # ----------------------------------------------------
+        # Continuación del mensaje
+        # ----------------------------------------------------
+        message_admin += (
+            f'\n---\n'
+            f'## 💰 Detalles Financieros\n'
+            f'- **Monto Total de la Venta:** ${sale_data.get("total_abono", "N/A")}\n'
+            f'- **Método de Pago:** {sale_data.get("payment_method", "N/A")}\n'
+            f'- **Referencia/Link:** {sale_data.get("reference", "N/A")}\n\n'
+            f'---\n'
+            f'## 💡 Acción Requerida\n'
+            f'Por favor, **Ponte en contacto con el cliente para validar la compra. Si el pago ya fue realizado, ponte en contacto con un administrador para proceder a emitir los boletos\n'
+            f'Puedes usar el ID de Venta (`{sale_data.get("sale_id", "N/A")}`) o el Email del cliente (`{user.Email}`) para la búsqueda.\n\n'
+            f'Gracias por tu pronta gestión,\n'
+            f'**Equipo de Fiesta Ticket**\n'
+            f''
+        )
+
+        msg_admin = Message(admin_subject, sender=config["MAIL_USERNAME"], recipients=admin_recipients)
+        msg_admin.body = message_admin
+
+        mail.send(msg_admin)
+
+
     except Exception as e:
         logging.error(f"Error sending email: {e}")
         db.session.rollback()   

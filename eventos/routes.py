@@ -403,6 +403,8 @@ def buy_tickets():
         logging.info(f"Tickets reservarán hasta {expire_dt_aware.isoformat()} UTC")
         expire_at_str = expire_dt_aware.isoformat().replace('+00:00', 'Z')
 
+        print(f"Expire at para Tickera: {expire_at_str}, Expire_dt_aware: {expire_dt_aware.isoformat()}")
+
         payload = {
             "event": event.event_id_provider,
             "tickets": ticket_ids,
@@ -480,6 +482,13 @@ def buy_tickets():
 @roles_required(allowed_roles=["admin", "customer", "tiquetero"])
 def get_paymentdetails():
     user_id = get_jwt().get("id")
+    event_id = request.args.get('query', '')
+
+    if not event_id:
+        return jsonify({"message": "Falta el ID de evento"}), 400
+
+    if not event_id.isdigit():
+        return jsonify({"message": "ID de evento inválido"}), 400
 
     if not all([user_id]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
@@ -510,7 +519,8 @@ def get_paymentdetails():
             .load_only(Venue.venue_id, Venue.name)
         ).filter(
             Ticket.customer_id == int(customer.CustomerID),
-            Ticket.status == 'en carrito'
+            Ticket.status == 'en carrito',
+            Ticket.event_id == int(event_id)
         ).limit(6).all()
 
         if not tickets_en_carrito or len(tickets_en_carrito) == 0:
@@ -595,6 +605,7 @@ def get_paymentdetails():
 def block_tickets():
     user_id = get_jwt().get("id")
     data = request.get_json()
+    event_id = request.args.get('query', '')
 
     payment_method = data.get("paymentMethod")
     payment_reference = data.get("paymentReference")
@@ -611,7 +622,7 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
     # ----------------------------------------------------------------
-    if not all([user_id, payment_method, tickera_id, tickera_api_key]):
+    if not all([user_id, payment_method, tickera_id, tickera_api_key, event_id]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
     if payment_method not in ["pagomovil", "efectivo", "zelle"]:
@@ -662,10 +673,11 @@ def block_tickets():
     tickets_en_carrito = Ticket.query.options(
         joinedload(Ticket.seat).joinedload(Seat.section),
         joinedload(Ticket.event)
-    ).filter_by(customer_id=customer.CustomerID, status='en carrito').all()
+    ).filter_by(customer_id=customer.CustomerID, status='en carrito', event_id=int(event_id)).all()
 
     if not tickets_en_carrito:
         return jsonify({"message": "No hay tickets en el carrito"}), 404
+
 
     if len(tickets_en_carrito) > 6:
         return jsonify({"message": "No se pueden comprar más de 6 boletos a la vez"}), 400
@@ -825,7 +837,7 @@ def block_tickets():
         # Enviar notificación por email al cliente
         # ---------------------------------------------------------------
 
-        utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, tickets, sale_data)
+        utils.sendnotification_for_Blockage(current_app.config, db, mail, customer, tickets, sale_data)
 
         # ---------------------------------------------------------------
         # Notificar a administración sobre nueva venta/pago por whatsapp
