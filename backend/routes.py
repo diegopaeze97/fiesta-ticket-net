@@ -1133,6 +1133,7 @@ def load_available_tickets():
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_boleteria():
     try:
+        now = datetime.now(timezone.utc)  # Siempre en UTC
         event_id = request.args.get('query', '')
         if not event_id.isdigit():
             return jsonify({"message": "ID de evento inválido"}), 400
@@ -1144,87 +1145,101 @@ def load_boleteria():
         tickets_list = []
         tickets_stats = {}
 
-        if event.Type == 'Espectaculo': #si se trata de un evento, se cargan los tickets
-            # Traer todos los tickets excepto los disponibles, optimizando con joinedload y load_only
-
-            tickets = (
-                Ticket.query.options(
-                    joinedload(Ticket.customer),
-                    joinedload(Ticket.seat).joinedload(Seat.section),
-                    joinedload(Ticket.event),
-                    load_only(
-                        Ticket.ticket_id, Ticket.status, Ticket.price, Ticket.discount, Ticket.fee,
-                        Ticket.saleLocator, Ticket.saleLink, Ticket.QRlink, Ticket.blockedBy,
-                        Ticket.seat_id, Ticket.event_id, Ticket.customer_id
-                    )
+        tickets = (
+            Ticket.query.options(
+                joinedload(Ticket.customer),
+                joinedload(Ticket.seat).joinedload(Seat.section),
+                joinedload(Ticket.event),
+                load_only(
+                    Ticket.ticket_id, Ticket.status, Ticket.price, Ticket.discount, Ticket.fee,
+                    Ticket.saleLocator, Ticket.saleLink, Ticket.QRlink, Ticket.blockedBy,
+                    Ticket.seat_id, Ticket.event_id, Ticket.customer_id
                 )
-                .filter(
-                    Ticket.event_id == event.event_id,
-                    Ticket.status == 'pagado'
-                )
-                .all()
             )
-
-            # Contar tickets por estado en una sola consulta
-            tickets_counts = dict(
-                db.session.query(
-                    Ticket.status, func.count(Ticket.ticket_id)
-                )
-                .filter(Ticket.event_id == event.event_id)
-                .group_by(Ticket.status)
-                .all()
+            .filter(
+                Ticket.event_id == event.event_id,
+                Ticket.status == 'pagado'
             )
+            .all()
+        )
 
-            tickets_stats = {
-                "available_tickets": tickets_counts.get("disponible", 0),
-                "blocked_tickets": tickets_counts.get("bloqueado", 0),
-                "reserved_tickets": sum(
-                    tickets_counts.get(s, 0) for s in ["reservado", "pagado por verificar", "por cuotas", "en carrito", "pendiente pago"]
-                ),
-                "paid_tickets": tickets_counts.get("pagado", 0),
-            }
+        # Contar tickets por estado en una sola consulta
+        tickets_counts = dict(
+            db.session.query(
+                Ticket.status, func.count(Ticket.ticket_id)
+            )
+            .filter(Ticket.event_id == event.event_id)
+            .group_by(Ticket.status)
+            .all()
+        )
 
-            SVGmap = event.SVGmap if event.SVGmap else ""
+        tickets_stats = {
+            "available_tickets": tickets_counts.get("disponible", 0),
+            "blocked_tickets": tickets_counts.get("bloqueado", 0),
+            "reserved_tickets": sum(
+                tickets_counts.get(s, 0) for s in ["reservado", "pagado por verificar", "por cuotas", "pendiente pago"]
+            ),
+            "paid_tickets": tickets_counts.get("pagado", 0),
+            "encarrito_tickets": tickets_counts.get("en carrito", 0),
+        }
 
-            for t in tickets:
-                tickets_list.append({
-                    "sale_id": t.sale_id,
-                    "fullname": f"{t.customer.FirstName} {t.customer.LastName}" if t.customer else "",
-                    "status": t.status,
-                    "price": round((t.price - t.discount) / 100, 2) if t.price else 0,
-                    "saleLocator": t.saleLocator,
-                    "saleLink": t.saleLink,
-                    "QRlink": t.QRlink,
-                    "email": t.customer.Email if t.customer else "",
-                    "section": t.seat.section.name if t.seat else "",
-                    "row": t.seat.row if t.seat else "",
-                    "number": t.seat.number if t.seat else "",
-                    "event": t.event.name,
-                    "date": t.event.date_string,
-                    "hour": t.event.hour_string,
-                    "place": t.event.venue.name,
-                    "blockedBy": t.blockedBy,
-                    "ticket_id": t.ticket_id,
-                })
+        
+        #validamos los tickets que estan expirados, si estan en carrito y ya pasaron su tiempo, los contamos como disponibles
+        expired_en_carrito_count = 0
+        for status, count in tickets_counts.items():
+            if status == 'en carrito':
+                for t in tickets:
+                    if t.status == 'en carrito':
+                        if t.expires_at and t.expires_at.tzinfo is None:
+                            expires_at_aware = t.expires_at.replace(tzinfo=timezone.utc)
+                        else:
+                            expires_at_aware = t.expires_at # Ya tiene info de zona horaria
+                        if not expires_at_aware or expires_at_aware <= now:
+                            expired_en_carrito_count += 1
 
-        else:  # otro tipo de evento → ventas, se cargan las ventas
-            sales = Sales.query.filter(Sales.event == event.event_id).all()
+        tickets_stats["available_tickets"] += expired_en_carrito_count
+        tickets_stats["encarrito_tickets"] -= expired_en_carrito_count
 
-            for s in sales:
-                tickets_list.append({
-                    "sale_id": s.sale_id,
-                    "fullname": f"{s.customer.FirstName} {s.customer.LastName}" if s.customer else "",
-                    "status": s.StatusFinanciamiento,
-                    "event": s.event_rel.name if s.event_rel else "",
-                    "price": round(s.price / 100, 2),
-                    "saleLocator": s.saleLocator,
-                    "saleLink": s.saleLink,
-                    "email": s.customer.Email if s.customer else "",
-                })
+        SVGmap = event.SVGmap if event.SVGmap else ""
+
+        for t in tickets:
+
+            if t.status == 'en carrito':
+                if t.expires_at and t.expires_at.tzinfo is None:
+                    expires_at_aware = t.expires_at.replace(tzinfo=timezone.utc)
+                else:
+                    expires_at_aware = t.expires_at # Ya tiene info de zona horaria
+                if not expires_at_aware or expires_at_aware <= now:
+                    # Si el ticket está "en carrito" pero ha expirado, lo marcamos como disponible
+                    continue  # No lo incluimos en la lista de tickets disponibles
+            
+
+            tickets_list.append({
+                "sale_id": t.ticket_id,
+                "fullname": f"{t.customer.FirstName} {t.customer.LastName}" if t.customer else "",
+                "status": t.status,
+                "price": round((t.price - t.discount) / 100, 2) if t.price else 0,
+                "saleLocator": t.saleLocator,
+                "saleLink": t.saleLink,
+                "QRlink": t.QRlink,
+                "email": t.customer.Email if t.customer else "",
+                "section": t.seat.section.name if t.seat else "",
+                "row": t.seat.row if t.seat else "",
+                "number": t.seat.number if t.seat else "",
+                "event": t.event.name,
+                "date": t.event.date_string,
+                "hour": t.event.hour_string,
+                "place": t.event.venue.name,
+                "blockedBy": t.blockedBy,
+            })
 
         return jsonify({
             "status": "ok",
             "type": event.Type,
+            "event": event.name,
+            "date": event.date_string,
+            "hour": event.hour_string,
+            "place": event.venue.name,
             "stats": tickets_stats,
             "tickets": tickets_list,
             "venue_map": SVGmap
@@ -1326,6 +1341,9 @@ def load_map():
                 if status == "en carrito":
                     if expires_raw is None or expires_ts <= now_ts:
                         status = "disponible"
+                
+                if status not in ["disponible", "en carrito"]:
+                    status = "bloqueado"
                     
                 tickets_list.append({
                     "ticket_id": t["ticket_id"],
