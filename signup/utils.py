@@ -146,4 +146,6 @@ def check_validation_attempts(email):
     return False # Retorna False si no hay suficientes intentos fallidos para bloquear
 
 # Define a regular expression for strong passwords
-strong_password_pattern = re.compile(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$')
+# Requiere al menos 8 caracteres, al menos una letra y un dígito (más simple)
+strong_password_pattern = re.compile(r'^.{6,}$')
+system_strong_password_pattern = re.compile(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$')

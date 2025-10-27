@@ -147,7 +147,7 @@ def register():
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
     
-    if not signup_utils.strong_password_pattern.match(password):
+    if not signup_utils.system_strong_password_pattern.match(password):
         return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos una letra mayúscula, una minúscula, un número y un carácter especial, y tener una longitud mínima de 8 caracteres.'), 400
 
     if password != confirm_password:
@@ -296,7 +296,7 @@ def edit_user_info():
             signup_utils.validate_newuser(email, current_app.config, user)
         
         if password:
-            if not signup_utils.strong_password_pattern.match(password):
+            if not signup_utils.system_strong_password_pattern.match(password):
                 return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos una letra mayúscula, una minúscula, un número y un carácter especial, y tener una longitud mínima de 8 caracteres.'), 400
             if not confirm_password:
                 return jsonify(message='Debes confirmar la contraseña.'), 400

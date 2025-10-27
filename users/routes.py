@@ -48,7 +48,7 @@ def register():
         return jsonify(message='Numero de cedula invalido'), 400
     
     if not signup_utils.strong_password_pattern.match(password):
-        return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos una letra mayúscula, una minúscula, un número y un carácter especial, y tener una longitud mínima de 8 caracteres.'), 400
+        return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos 6 caracteres.'), 400
 
     if password != confirm_password:
         return jsonify(message='Las contraseñas no coinciden. Por favor, verifica.'), 400
@@ -424,7 +424,7 @@ def recovery_password_verify_code():
     if password != confirm_password:
         return jsonify({'message': 'Las contraseñas no coinciden. Por favor, verifica.'}), 400
     if not signup_utils.strong_password_pattern.match(password):
-        return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos una letra mayúscula, una minúscula, un número y un carácter especial, y tener una longitud mínima de 8 caracteres.'), 400
+        return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos 6 caracteres.'), 400
     
     try:
         user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role == 'customer').one_or_none() # Buscamos el usuario
