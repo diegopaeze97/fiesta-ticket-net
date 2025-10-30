@@ -7,6 +7,7 @@ import os
 import redis
 from rq import Queue
 import boto3
+import stripe
 
 load_dotenv()
 
@@ -24,6 +25,9 @@ s3 = boto3.client(
     aws_secret_access_key=AWS_SECRET_KEY,
     region_name=S3_REGION
 )
+
+#STRIPE
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 jwt = JWTManager()
 db = SQLAlchemy()

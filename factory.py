@@ -7,6 +7,7 @@ from itsdangerous import URLSafeTimedSerializer as Serializer
 from eventos.routes import events
 from users.routes import users
 from backend.routes import backend
+from stripewebhook.routes import stripewebhook
 from extensions import jwt, db, socketio, mail # para importar flask_jwt_extended, db, jwt, SQLAlchemy
 from models import Revoked_tokens
 from flask_cors import CORS
@@ -60,7 +61,13 @@ def createApp():
     #taxes 
     app.config['IVA_PERCENTAGE'] = int(os.environ.get('IVA_PERCENTAGE', 0))  # Porcentaje de impuestos, por defecto 0 si no está definido
 
+
+    #websites
     app.config['WEBSITE_FRONTEND_TICKERA'] = os.getenv('WEBSITE_FRONTEND_TICKERA')
+
+    #stripe
+    app.config['STRIPE_SECRET_KEY'] = os.getenv('STRIPE_SECRET_KEY')
+    app.config['STRIPE_WEBHOOK_SECRET_KEY'] = os.getenv('STRIPE_WEBHOOK_SECRET_KEY')
 
     db.init_app(app)
     jwt.init_app(app)
@@ -131,5 +138,6 @@ def createApp():
     app.register_blueprint(events, url_prefix='/events')
     app.register_blueprint(backend, url_prefix='/backend')
     app.register_blueprint(users, url_prefix='/users')
+    app.register_blueprint(stripewebhook, url_prefix='/stripewebhook')
 
     return app

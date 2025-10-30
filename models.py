@@ -86,6 +86,7 @@ class Event(db.Model):
     SVGmap = Column(String) # Mapa SVG del lugar, si aplica
     mainImage = Column(String(500))
     bannerImage = Column(String(500))
+    bannerImageDevice = Column(String(500))
     active = Column(Boolean, default=True)
     event_id_provider = Column(Integer) # ID del evento en el proveedor externo (Tickera) #solo si aplica (API)
     event_provider = Column(Integer) # ID del proveedor externo (Tickera)

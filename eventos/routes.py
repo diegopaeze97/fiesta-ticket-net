@@ -1,7 +1,7 @@
 from flask import request, jsonify, Blueprint, make_response, session, current_app, g
 from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
 from werkzeug.security import  check_password_hash, generate_password_hash
-from extensions import db, s3
+from extensions import db, s3, stripe
 from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Financiamientos, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
@@ -21,15 +21,14 @@ import requests
 import re
 import calendar
 from dateutil import parser
+import time
+from models import Event
 
 events = Blueprint('events', __name__)
 
 # este modulo es la API que permite a terceros bloquear boleteria, emitirla, etc
 
-import time
-from flask import Blueprint, jsonify, request, current_app
-import requests
-from models import Event
+
 
 events = Blueprint('events', __name__)
 
@@ -241,7 +240,8 @@ def get_events():
                     "city": event.venue.city,
                 } if event.venue else None,
                 "mainImage": event.mainImage,
-                "bannerImage": event.bannerImage
+                "bannerImage": event.bannerImage,
+                "bannerImageDevice": event.bannerImageDevice
             }
             events_list.append(event_data)
 
@@ -670,10 +670,18 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 4️⃣ Obtener tickets en carrito
     # ----------------------------------------------------------------
+    # Validar que event_id sea numérico antes de convertirlo a int
+    if not str(event_id).isdigit():
+        return jsonify({"message": "ID de evento inválido"}), 400
+
     tickets_en_carrito = Ticket.query.options(
         joinedload(Ticket.seat).joinedload(Seat.section),
         joinedload(Ticket.event)
-    ).filter_by(customer_id=customer.CustomerID, status='en carrito', event_id=int(event_id)).all()
+    ).filter(
+        Ticket.customer_id == int(customer.CustomerID),
+        Ticket.status == 'en carrito',
+        Ticket.event_id == int(event_id)
+    ).all()
 
     if not tickets_en_carrito:
         return jsonify({"message": "No hay tickets en el carrito"}), 404
@@ -1149,3 +1157,147 @@ def canjear_ticket():
         db.session.rollback()
         logging.error(f"Error al buscar ticket: {e}")
         return jsonify({'message': 'Error al buscar ticket', 'status': 'error'}), 500
+
+
+@events.route("/create-stripe-checkout-session", methods=["GET"])
+@roles_required(allowed_roles=["admin", "tiquetero", "customer"])
+def create_stripe_checkout_session():
+    user_id = get_jwt().get("id")
+    event_id = request.args.get('query', '')
+
+    # ----------------------------------------------------------------
+    # 1️⃣ Validaciones iniciales
+    # ----------------------------------------------------------------
+    if not all([user_id, event_id]):
+        return jsonify({"message": "Faltan parámetros obligatorios"}), 400
+    
+    try:
+
+        # ----------------------------------------------------------------
+        # 3️⃣ Validar cliente
+        # ----------------------------------------------------------------
+        customer = EventsUsers.query.filter_by(CustomerID=int(user_id)).one_or_none()
+        if not customer:
+            return jsonify({"message": "Usuario no encontrado"}), 404
+
+        if customer.status.lower() == "suspended":
+            return jsonify({"message": "Su cuenta está suspendida."}), 403
+
+        if customer.status.lower() != "verified":
+            return jsonify({"message": "Su cuenta no está verificada."}), 403
+
+        # ----------------------------------------------------------------
+        # 4️⃣ Obtener tickets en carrito
+        # ----------------------------------------------------------------
+        # Validate event_id is numeric and convert to int
+        if not str(event_id).isdigit():
+            return jsonify({"message": "ID de evento inválido"}), 400
+        event_id_int = int(event_id)
+
+        tickets_en_carrito = Ticket.query.options(
+            joinedload(Ticket.seat).joinedload(Seat.section),
+            joinedload(Ticket.event)
+        ).filter(
+            Ticket.customer_id == customer.CustomerID,
+            Ticket.status == 'en carrito',
+            Ticket.event_id == event_id_int
+        ).all()
+
+        if not tickets_en_carrito:
+            return jsonify({"message": "No hay tickets en el carrito"}), 404
+
+
+        if len(tickets_en_carrito) > 6:
+            return jsonify({"message": "No se pueden comprar más de 6 boletos a la vez"}), 400
+
+        event = tickets_en_carrito[0].event
+
+        if not event or not event.active:
+            return jsonify({"message": "Evento no encontrado o inactivo"}), 404
+        
+        tickets_list = []
+        tickets_ids = ""
+        total_to_pay = 0
+
+        now = datetime.now(timezone.utc)  # Siempre en UTC
+        for t in tickets_en_carrito:
+            # 1. Convierte t.expires_at a aware ASUMIENDO que es UTC
+            if t.expires_at and t.expires_at.tzinfo is None:
+                expires_at_aware = t.expires_at.replace(tzinfo=timezone.utc)
+            else:
+                expires_at_aware = t.expires_at # Ya tiene info de zona horaria
+            if not expires_at_aware or expires_at_aware < now:
+                return jsonify({"message": "Tu reserva ha caducado"}), 400
+            
+            seat = t.seat
+            section = seat.section if seat else None
+
+            section_name = (section.name.lower().replace(' ', '') if section else "sinseccion")
+            row_name = seat.row if seat and seat.row else "sinfila"
+            number = (seat.number if seat and seat.number else "sinnumero")
+
+            tickets_ids += f"{t.ticket_id}|"
+
+            total_to_pay += t.price
+
+            tickets_list.append({
+                "section": section_name,
+                "price": t.price,
+                "seat": f"{row_name}{number}",
+            })
+
+        total_fee = (event.Fee or 0) * total_to_pay / 100
+        total_fee_int = int(total_fee)
+
+        tickets_ids = tickets_ids[:-1]  # Elimina el último "|"
+
+        # ----------------------------------------------------------------
+        # 5️⃣ Crear line_items para Stripe
+        # ----------------------------------------------------------------
+
+        # Usa la lista de diccionarios 'tickets_list' que ya contiene la info formateada
+        line_items = [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"Asiento {t['section']} - {t['seat']} - {event.name}"},
+                    # Asegúrate que 't['price']' es el precio en centavos, 
+                    # asumiendo que ya lo tienes correcto.
+                    "unit_amount": t['price'], 
+                },
+                "quantity": 1,
+            }
+            for t in tickets_list  # <-- ¡Usar tickets_list en lugar de tickets_en_carrito!
+        ]
+
+        # Añadir el Fee de servicio (este ya estaba correcto, asumiendo que total_fee está en centavos)
+        line_items.append(
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "Fee de servicio"},
+                    "unit_amount": total_fee_int,
+                },
+                "quantity": 1,
+            }
+        )
+
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=line_items,
+            mode="payment",
+            success_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/success?session_id=CHECKOUT_SESSION_ID",
+            cancel_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/confirm-purchase?query={event_id}",
+            metadata={
+                "customer_id": str(user_id),
+                "tickets": str(tickets_ids),
+                "event_id": str(event_id)
+            },
+        )
+
+        return jsonify({"url": session.url, "status": "ok"}), 200
+    except Exception as e:
+        logging.error(f"Error creando sesión de Stripe: {str(e)}")
+        return jsonify({"message": "Error creando sesión de pago", "status": "error"}), 500
+    finally:
+        db.session.close()
