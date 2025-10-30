@@ -1249,6 +1249,8 @@ def create_stripe_checkout_session():
         total_fee = (event.Fee or 0) * total_to_pay / 100
         total_fee_int = int(total_fee)
 
+        print("hey")
+
         tickets_ids = tickets_ids[:-1]  # Elimina el último "|"
 
         # ----------------------------------------------------------------
