@@ -21,6 +21,8 @@ import requests
 import re
 import time
 import calendar
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 backend = Blueprint('backend', __name__)
 
@@ -761,73 +763,111 @@ def new_event():
             if event is None or not event.active:
                 print("Evento no encontrado o inactivo")
                 return jsonify({"message": "Evento no encontrado"}), 404
+            
+            url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-tickets"
+            query = str(event.event_id_provider).strip()  # normalizar / sanitizar
 
-            url = f'{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-tickets'
-            params = {
-                "query": event.event_id_provider,
-                "tickera_id": tickera_id,
-                "tickera_api_key": tickera_api_key
+            # Construir sesión con reintentos para errores transitorios
+            session = requests.Session()
+            retries = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=frozenset(['GET', 'POST'])
+            )
+            adapter = HTTPAdapter(max_retries=retries)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+
+            # Enviar credenciales en headers (evita que queden en logs/urls)
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "FiestaTickets/1.0",
+                "X-Tickera-Id": tickera_id,
+                "X-Tickera-Api-Key": tickera_api_key
             }
+
+            params = {"query": query}
+
+            # Verificación de certificado configurable (True por defecto)
+            verify = current_app.config.get("REQUESTS_VERIFY", True)
+
+            try:
+                # timeouts: (connect, read)
+                response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
+
+                # Validaciones básicas de seguridad / integridad
+                content_type = response.headers.get("Content-Type", "")
+                if "application/json" not in content_type:
+                    logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
+                    response.raise_for_status()
+
+            except requests.exceptions.RequestException:
+                logging.exception("Error al comunicarse con Tickera")
+                # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
+                raise
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
 
             # Hacer el request
             response = requests.get(url, params=params, timeout=100)
 
-            # Retornar el resultado directamente al cliente
-            if response.status_code == 200:
-                tickets = response.json().get("tickets", [])
+            tickets = response.json().get("tickets", [])
 
-                print(tickets)
 
-                #aca se crean los tickets como se hace con el archivo
-                section_cache = {}
-                seat_cache = {}
-                tickets_to_add = [] # Lista para almacenar los tickets a insertar
-                for ticket_data in tickets:
-                    asiento = str(ticket_data.get('seat', '')).strip()
-                    seccion = str(ticket_data.get('section', '')).strip()
-                    precio = int(ticket_data.get('price', 0))
-                    ticket_id_fromprovider = int(ticket_data.get('ticket_id_provider', 0))
+            #aca se crean los tickets como se hace con el archivo
+            section_cache = {}
+            seat_cache = {}
+            tickets_to_add = [] # Lista para almacenar los tickets a insertar
+            for ticket_data in tickets:
+                asiento = str(ticket_data.get('seat', '')).strip()
+                seccion = str(ticket_data.get('section', '')).strip()
+                precio = int(ticket_data.get('price', 0))
+                ticket_id_fromprovider = int(ticket_data.get('ticket_id_provider', 0))
 
-                    if not all([asiento, seccion, precio, ticket_id_fromprovider]):
-                        return jsonify({'message': 'Datos incompletos en el ticket desde la API', 'status': 'error'}), 400
+                if not all([asiento, seccion, precio, ticket_id_fromprovider]):
+                    return jsonify({'message': 'Datos incompletos en el ticket desde la API', 'status': 'error'}), 400
 
-                    # Buscar o crear la sección (cache)
-                    section_key = (venue.venue_id, seccion)
-                    if section_key not in section_cache:
-                        section = Section.query.filter_by(venue_id=venue.venue_id, name=seccion).first()
-                        if not section:
-                            section = Section(venue_id=venue.venue_id, name=seccion)
-                            db.session.add(section)
-                            db.session.flush()
-                        section_cache[section_key] = section
-                    else:
-                        section = section_cache[section_key]
+                # Buscar o crear la sección (cache)
+                section_key = (venue.venue_id, seccion)
+                if section_key not in section_cache:
+                    section = Section.query.filter_by(venue_id=venue.venue_id, name=seccion).first()
+                    if not section:
+                        section = Section(venue_id=venue.venue_id, name=seccion)
+                        db.session.add(section)
+                        db.session.flush()
+                    section_cache[section_key] = section
+                else:
+                    section = section_cache[section_key]
 
-                    # Dividir el asiento en fila y número
-                    row_label = ''.join([ch for ch in asiento if ch.isalpha()])
-                    number = ''.join([ch for ch in asiento if ch.isdigit()])
+                # Dividir el asiento en fila y número
+                row_label = ''.join([ch for ch in asiento if ch.isalpha()])
+                number = ''.join([ch for ch in asiento if ch.isdigit()])
 
-                    seat_key = (section.section_id, row_label, number)
-                    if seat_key not in seat_cache:
-                        seat = Seat.query.filter_by(section_id=section.section_id, row=row_label, number=number).first()
-                        if not seat:
-                            seat = Seat(section_id=section.section_id, row=row_label, number=number)
-                            db.session.add(seat)
-                            db.session.flush()
-                        seat_cache[seat_key] = seat
-                    else:
-                        seat = seat_cache[seat_key]
+                seat_key = (section.section_id, row_label, number)
+                if seat_key not in seat_cache:
+                    seat = Seat.query.filter_by(section_id=section.section_id, row=row_label, number=number).first()
+                    if not seat:
+                        seat = Seat(section_id=section.section_id, row=row_label, number=number)
+                        db.session.add(seat)
+                        db.session.flush()
+                    seat_cache[seat_key] = seat
+                else:
+                    seat = seat_cache[seat_key]
 
-                    # Crear ticket (solo agregamos a la lista, no al session aún)
-                    ticket = Ticket(
-                        event_id=event.event_id,
-                        ticket_id_provider=ticket_id_fromprovider,
-                        seat_id=seat.seat_id,
-                        price=precio,
-                        status='disponible',
-                        created_by=user_id
-                    )
-                    tickets_to_add.append(ticket)
+                # Crear ticket (solo agregamos a la lista, no al session aún)
+                ticket = Ticket(
+                    event_id=event.event_id,
+                    ticket_id_provider=ticket_id_fromprovider,
+                    seat_id=seat.seat_id,
+                    price=precio,
+                    status='disponible',
+                    created_by=user_id
+                )
+                tickets_to_add.append(ticket)
                     
 
             else:
@@ -844,7 +884,7 @@ def new_event():
         db.session.commit()
 
         return jsonify({'message': 'Evento y tickets creados exitosamente', 'status': 'ok'}), 200
-    
+
     except requests.exceptions.RequestException as e:
         db.session.rollback()
         return jsonify({"message": f"Error en el request: {str(e)}"}), 500
@@ -1023,7 +1063,12 @@ def load_available_tickets():
         venue = request.args.get('venue', '')
         date_and_time = request.args.get('date', '')
         date, time = ('', '')
+        tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+        tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
 
+        if not all([event_name, venue, date_and_time, tickera_id, tickera_api_key]):
+            return jsonify({"message": "Faltan parámetros"}), 400
+        
         if ' - ' in date_and_time:
             date, time = date_and_time.split(' - ', 1)
 
@@ -1055,67 +1100,115 @@ def load_available_tickets():
         if event.active != True:
             return jsonify({"message": "El evento no está activo"}), 400
 
-        # ✅ Traer los tickets disponibles de una sola vez, con relaciones precargadas
-        tickets = (
-            Ticket.query.options(
-                joinedload(Ticket.seat)
-                .joinedload(Seat.section),  # Carga Section en el mismo query
-                load_only(Ticket.ticket_id, Ticket.price, Ticket.status, Ticket.seat_id)
-            )
-            .filter(
-                and_(
-                    Ticket.event_id == event.event_id,
-                    or_(
-                        Ticket.status == 'disponible',
-                        Ticket.status == 'en carrito'
-                    )
-                )
-            )
-            .all()
+        # ---------------------------------------------------------------
+        # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
+        # ---------------------------------------------------------------
+
+        url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-map"
+        query = str(event.event_id_provider).strip()  # normalizar / sanitizar
+
+        # Construir sesión con reintentos para errores transitorios
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(['GET', 'POST'])
         )
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
+        # Enviar credenciales en headers (evita que queden en logs/urls)
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "FiestaTickets/1.0",
+            "X-Tickera-Id": tickera_id,
+            "X-Tickera-Api-Key": tickera_api_key
+        }
+
+        params = {"query": query}
+
+        # Verificación de certificado configurable (True por defecto)
+        verify = current_app.config.get("REQUESTS_VERIFY", True)
+
+        try:
+            # timeouts: (connect, read)
+            response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
+
+            # Validaciones básicas de seguridad / integridad
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
+                response.raise_for_status()
+
+        except requests.exceptions.RequestException:
+            logging.exception("Error al comunicarse con Tickera")
+            # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
+            raise
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
 
         # ✅ Procesar los tickets agrupados por sección y fila
         sections_dict = {}
         now = datetime.now(timezone.utc)  # Siempre en UTC
+
+        tickets = response.json().get("tickets", [])
+        now_ts = calendar.timegm(now.utctimetuple())
         
         for t in tickets:
-            if t.status == 'en carrito':
-                if t.expires_at and t.expires_at.tzinfo is None:
-                    expires_at_aware = t.expires_at.replace(tzinfo=timezone.utc)
-                else:
-                    expires_at_aware = t.expires_at # Ya tiene info de zona horaria
-                if not expires_at_aware or expires_at_aware > now:
-                    # Si el ticket está "en carrito" pero ha expirado, lo marcamos como disponible
-                    continue  # No lo incluimos en la lista de tickets disponibles
+            if t["status"] in ["disponible", "en carrito"]:
 
-            seat = t.seat
-            section = seat.section if seat else None
+                # Comparación segura
+                if t["status"] == "en carrito":
+                    expires_raw = t.get("expires_at")
 
-            section_name = section.name if section else "Sin sección"
-            row_name = seat.row if seat else "Sin fila"
+                    expires_dt = None
+                    expires_ts = None
+                    if isinstance(expires_raw, (int, float)):
+                        expires_ts = float(expires_raw)
+                    elif isinstance(expires_raw, str):
+                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                            try:
+                                expires_dt = datetime.strptime(expires_raw, fmt)
+                                expires_ts = calendar.timegm(expires_dt.utctimetuple())
+                                break
+                            except Exception:
+                                continue
 
-            if section_name not in sections_dict:
-                sections_dict[section_name] = {"section": section_name, "rows": {}}
-            if row_name not in sections_dict[section_name]["rows"]:
-                sections_dict[section_name]["rows"][row_name] = []
+                    if expires_raw is None or expires_ts > now_ts:
+                        continue
 
-            sections_dict[section_name]["rows"][row_name].append({
-                "ticket_id": t.ticket_id,
-                "price": t.price,
-                "status": t.status,
-                "number": seat.number if seat else None
-            })
+                number = t["number"]
+                section = t["section"]
+                row = t["row"]
+
+                if section not in sections_dict:
+                    sections_dict[section] = {"section": section, "rows": {}}
+                if row not in sections_dict[section]["rows"]:
+                    sections_dict[section]["rows"][row] = []
+
+                sections_dict[section]["rows"][row].append({
+                    "ticket_id": t["ticket_id"],
+                    "price": t["price"],
+                    "status": t["status"],
+                    "number": number
+                })
 
         # ✅ Convertir a lista
         tickets_list = [
             {
-                "section": section_name,
+                "section": section,
                 "rows": [
-                    {"row": row_name, "seats": seats}
-                    for row_name, seats in section_data["rows"].items()
+                    {"row": row, "seats": seats}
+                    for row, seats in section_data["rows"].items()
                 ],
             }
-            for section_name, section_data in sections_dict.items()
+            for section, section_data in sections_dict.items()
         ]
 
         return jsonify({
@@ -1294,18 +1387,60 @@ def load_map():
             return jsonify({"message": "Evento no encontrado"}), 404
 
         # ---------------------------------------------------------------
-        # 3️⃣ Hacer request externo
+        # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
         # ---------------------------------------------------------------
+
         url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-map"
-        params = {
-            "query": event.event_id_provider,
-            "tickera_id": tickera_id,
-            "tickera_api_key": tickera_api_key
+        query = str(event.event_id_provider).strip()  # normalizar / sanitizar
+
+        # Construir sesión con reintentos para errores transitorios
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(['GET', 'POST'])
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
+        # Enviar credenciales en headers (evita que queden en logs/urls)
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "FiestaTickets/1.0",
+            "X-Tickera-Id": tickera_id,
+            "X-Tickera-Api-Key": tickera_api_key
         }
 
+        params = {"query": query}
+
+        # Verificación de certificado configurable (True por defecto)
+        verify = current_app.config.get("REQUESTS_VERIFY", True)
+
         req_start = time.perf_counter()
-        response = requests.get(url, params=params, timeout=60)
-        req_end = time.perf_counter()
+        try:
+            # timeouts: (connect, read)
+            response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
+            req_end = time.perf_counter()
+
+            # Validaciones básicas de seguridad / integridad
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
+                response.raise_for_status()
+
+        except requests.exceptions.RequestException:
+            req_end = time.perf_counter()
+            logging.exception("Error al comunicarse con Tickera")
+            # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
+            raise
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
 
         # ---------------------------------------------------------------
         # 4️⃣ Procesar respuesta
@@ -1539,37 +1674,102 @@ def block_tickets():
     if not event or not event.active:
         return jsonify({"message": "Evento no encontrado o inactivo"}), 404
 
-    now = datetime.now(timezone.utc)  # Siempre en UTC
-
     # ----------------------------------------------------------------
     # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
     # ----------------------------------------------------------------
     url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
+
+    # Normalizar event id
+    event_id = str(event.event_id_provider).strip()
+    if not event_id or not event_id.isdigit() or len(event_id) > 64:
+        raise ValueError("event_id inválido")
+
+    # Sanitizar tickets_en_carrito
+    def clean_tickets(list_in):
+        out = []
+        if not list_in:
+            return out
+        for i, t in enumerate(list_in):
+            tid = t.ticket_id_provider
+            price = t.price
+            try:
+                tid_i = int(tid)
+            except Exception:
+                continue
+            # Price -> Decimal, >= 0
+            out.append({"ticket_id_provider": tid_i, "price": str(price)})
+            if len(out) >= 200:
+                break
+        return out
+    
+    tickets_payload = clean_tickets(tickets_en_carrito)
+
+    if not tickets_payload:
+        raise ValueError("No hay tickets válidos para bloquear")
+
     payload = {
-        "event": event.event_id_provider,
-        "tickets": [
-            {"ticket_id_provider": t.ticket_id_provider, "price": t.price}
-            for t in tickets_en_carrito
-        ],
-        "tickera_id": tickera_id,
-        "tickera_api_key": tickera_api_key,
+        "event": event_id,
+        "tickets": tickets_payload,
         "type_of_sale": "admin_sale"
     }
-    try:
-        response_block = requests.post(url_block, json=payload, timeout=30)
-        # 1️⃣ Validar respuesta del bloqueo
-        if response_block.status_code != 200:
-            db.session.rollback()
-            return jsonify({
-                "status": "error",
-                "code": response_block.status_code,
-                "message": response_block.json().get("message", "Error desconocido en Tickera")
-            }), response_block.status_code
-    except requests.exceptions.RequestException as e:
-        db.session.rollback()
-        logging.error(f"Error al bloquear tickets en Tickera: {str(e)}")
-        return jsonify({"message": "Error al conectar con Tickera para bloquear tickets"}), 502
 
+    # Session con retries
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "FiestaTickets/1.0",
+        "X-Tickera-Id": str(tickera_id),
+        "X-Tickera-Api-Key": str(tickera_api_key)
+    }
+
+    verify = current_app.config.get("REQUESTS_VERIFY", True)
+    # Initialize holder so later local DB logic can run using this response if needed
+    try:
+        response = session.post(
+            url_block,
+            json=payload,
+            headers=headers,
+            timeout=(5, 30),
+            allow_redirects=False,
+            verify=verify
+        )
+
+        content_type = response.headers.get("Content-Type", "")
+        if "application/json" not in content_type:
+            logging.error("Respuesta inesperada de Tickera en block-tickets: Content-Type no es JSON")
+            response.raise_for_status()
+
+        # Levantar para status >= 400
+        response.raise_for_status()
+
+        try:
+            data = response.json()
+        except ValueError:
+            logging.error("JSON inválido en respuesta de block-tickets")
+            raise
+
+        # store the response instead of returning early so local changes can be applied
+        block_response = data
+
+    except requests.exceptions.RequestException:
+        logging.exception("Error comunicándose con Tickera (block-tickets)")
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
     # ----------------------------------------------------------------
     # 6️⃣ Aplicar cambios locales (una sola transacción)
     # ----------------------------------------------------------------
