@@ -1099,6 +1099,26 @@ def load_available_tickets():
         
         if event.active != True:
             return jsonify({"message": "El evento no está activo"}), 400
+        
+        # ---------------------------------------------------------------
+        # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
+        # ---------------------------------------------------------------
+        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+
+        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
+        exchangeRate = 0
+
+        if response_exchange.status_code != 200:
+            logging.error(response_exchange.status_code)
+            return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
+        exchange_data = response_exchange.json()
+        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
+
+        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
+            return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
+
+        # le asignamos la tasa de cambio ACTUAL al usuario 
+        BsDExchangeRate = int(exchangeRate*100)
 
         # ---------------------------------------------------------------
         # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
@@ -1214,6 +1234,7 @@ def load_available_tickets():
         return jsonify({
             "tickets": tickets_list,
             "fee": event.Fee,
+            "BsDExchangeRate": BsDExchangeRate,
             "status": "ok"
         }), 200
 
