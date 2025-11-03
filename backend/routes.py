@@ -1055,6 +1055,188 @@ def load_tickets():
         logging.error(f"Error al crear evento: {e}")
         return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
     
+@backend.route('/load-successful-sales', methods=['GET']) #ver paquetes o ventas en general
+@roles_required(allowed_roles=["admin"])
+def load_successful_sales():
+    try:
+
+        from_date_str = request.args.get('from_date', '')
+        events_str = request.args.get('events', '')
+
+        if not from_date_str:
+            return jsonify({'message': 'Se requiere al menos un filtro (from_date o status)', 'status': 'error'}), 400
+
+        # Parse from_date as a datetime object if provided
+        from_date = None
+
+        
+        if from_date_str:
+            from_date_str = from_date_str.split('T')[0]  # Extraer solo la parte de la fecha
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'message': 'Formato de fecha inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
+
+        events = events_str.split(',') if events_str else []
+
+        # Información de ventas
+        query = Sales.query.options(
+            joinedload(Sales.customer).load_only(EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email),
+            joinedload(Sales.event_rel).load_only(Event.name, Event.event_id),
+            load_only(Sales.sale_id, Sales.status, Sales.price, Sales.discount, Sales.fee, Sales.saleLocator, Sales.saleLink, Sales.creation_date, Sales.liquidado)
+        )
+
+        filters = []
+        if from_date:
+            from_date = from_date.date()  # asegúrate de tener un date
+            filters.append(Sales.creation_date >= from_date)
+        if events and any(events):
+            filters.append(Sales.event.in_(events))
+
+        filters.append(Sales.status=='pagado')
+
+        if filters:
+            query = query.filter(and_(*filters))
+
+        sales = query.all()
+
+        sales_data = []
+        for sale in sales:
+            sales_data.append({
+                'sale_id': sale.sale_id,
+                'firstname': sale.customer.FirstName if sale.customer else '',
+                'lastname': sale.customer.LastName if sale.customer else '',
+                'status': sale.status,
+                'event': sale.event_rel.name if sale.event_rel else '',
+                'event_date': sale.event_rel.date_string if sale.event_rel else '',
+                'event_place': sale.event_rel.venue.name if sale.event_rel else '',
+                'event_hour': sale.event_rel.hour_string if sale.event_rel else '',
+                'event_id': sale.event_rel.event_id if sale.event_rel else '',
+                'price': round((sale.price - sale.discount + sale.fee )/100, 2),
+                'saleLocator': sale.saleLocator,
+                'saleLink': sale.saleLink,
+                'email': sale.customer.Email if sale.customer else '',
+                'saleDate': sale.creation_date.isoformat() if sale.creation_date else '',
+                'liquidado': sale.liquidado
+            })
+
+        all_events = Event.query.options(
+            joinedload(Event.venue).load_only(Venue.venue_id, Venue.name),
+            load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id)
+        ).all()
+        events_list = []
+        for event in all_events:
+            events_list.append({
+                "event_id": event.event_id,
+                "event": event.name,
+                "event_date": event.date_string,
+                "event_hour": event.hour_string,
+                "event_place": event.venue.name
+            })
+
+        sales_data = sorted(sales_data, key=lambda x: x['saleDate'], reverse=True)
+
+        return jsonify({"sales": sales_data, "status": "ok", "events": events_list}), 200
+
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al crear evento: {e}")
+        return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
+    
+@backend.route('/create-liquidation', methods=['GET']) #ver paquetes o ventas en general
+@roles_required(allowed_roles=["admin"])
+def create_liquidation():
+    try:
+
+        event = request.args.get('id_event', '')
+
+        if not event:
+            return jsonify({'message': 'faltan parámetros', 'status': 'error'}), 400
+
+
+        # Información de ventas
+        query = Sales.query.options(
+            joinedload(Sales.customer).load_only(EventsUsers.Email),
+            joinedload(Sales.tickets).load_only(Ticket.ticket_id, Ticket.seat_id),
+            joinedload(Sales.event_rel).load_only(Event.name, Event.event_id).joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
+            load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.saleLink, Sales.creation_date, Sales.liquidado)
+        )
+
+        filters = []
+
+        #filters.append(Sales.status=='pagado')
+        filters.append(Sales.event==int(event))
+        #filters.append(Sales.liquidado!=True)
+
+        if filters:
+            query = query.filter(and_(*filters))
+
+        sales = query.all()
+        sales_data = []
+
+        if sales:
+
+            event_info = {
+                "event_id": sales[0].event_rel.event_id if sales[0].event_rel else '',
+                "provider_name": sales[0].event_rel.provider.ProviderName if (sales[0].event_rel and sales[0].event_rel.provider) else '',
+                "event": sales[0].event_rel.name,
+                "event_date": sales[0].event_rel.date_string,
+                "event_hour": sales[0].event_rel.hour_string,
+                "event_place": sales[0].event_rel.venue.name
+            }
+
+            print(event_info)
+
+            for sale in sales:
+                sales_data.append({
+                    'sale_id': sale.sale_id,
+                    'firstname': sale.customer.FirstName if sale.customer else '',
+                    'lastname': sale.customer.LastName if sale.customer else '',
+                    'price': round((sale.price - sale.discount + sale.fee )/100, 2),
+                    'saleLink': sale.saleLink,
+                    'email': sale.customer.Email if sale.customer else '',
+                    'saleDate': sale.creation_date.isoformat() if sale.creation_date else '',
+                    'liquidado': sale.liquidado,
+                    'tickets': [{
+                        'ticket_id': ticket.ticket_id,
+                        'seat_id': ticket.seat_id
+                    } for ticket in sale.tickets]
+                })
+
+        else:
+            event_obj = Event.query.options(
+                load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id),
+                joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
+                joinedload(Event.venue).load_only(Venue.venue_id, Venue.name)
+            ).filter(Event.event_id == event).one_or_none()
+
+            if not event_obj:
+                return jsonify({"message": "No se encontró el evento"}), 404
+            
+            event_info = {
+                "event_id": event_obj.event_id,
+                "provider_name": event_obj.provider.ProviderName if (event_obj.provider) else '',
+                "event": event_obj.name,
+                "event_date": event_obj.date_string,
+                "event_hour": event_obj.hour_string,
+                "event_place": event_obj.venue.name if event_obj.venue else ''
+            }
+
+
+
+        sales_data = sorted(sales_data, key=lambda x: x['saleDate'], reverse=True)
+
+        print(sales_data)
+
+        return jsonify({"sales": sales_data, "status": "ok", "event": event_info}), 200
+
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al crear evento: {e}")
+        return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
+    
 @backend.route('/load-available-tickets', methods=['GET'])
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_available_tickets():
@@ -1898,205 +2080,146 @@ def block_tickets():
 @backend.route('/customize-reservation', methods=['GET']) #endpoint para recopilar informacion de la reserva (admin)
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def customize_reservation():
-
     sale_id = request.args.get('query', '')
 
+    def format_amount(cents):
+        try:
+            return round(int(cents) / 100, 2)
+        except Exception:
+            return 0.0
+
+    def build_payments_list(payments_query):
+        out = []
+        for entry in payments_query:
+            out.append({
+                'amount': format_amount(entry.Amount),
+                'date': entry.PaymentDate,
+                'paymentMethod': entry.PaymentMethod,
+                'paymentReference': entry.Reference,
+                'paymentVerified': entry.Status
+            })
+        return out
+
+    def build_tickets_from_sale(sale):
+        tickets = []
+        raw_ids = sale.ticket_ids or ''
+        ticket_ids = raw_ids.split('|') if '|' in raw_ids else [raw_ids]
+        for ticket_id in ticket_ids:
+            if not ticket_id:
+                continue
+            ticket = Ticket.query.get(int(ticket_id))
+            if not ticket:
+                continue
+            seat = Seat.query.get(ticket.seat_id) if ticket.seat_id else None
+            section = Section.query.get(seat.section_id) if seat and seat.section_id else None
+            tickets.append({
+                'ticket_id': ticket.ticket_id,
+                'price': format_amount(ticket.price),
+                'status': ticket.status,
+                'section': section.name if section else None,
+                'row': seat.row if seat else None,
+                'number': seat.number if seat else None,
+                'QRlink': (f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={ticket.saleLink}') if sale.StatusFinanciamiento == 'pagado' else None
+            })
+        return tickets
+
+    def parse_due_dates_field(due_dates_field):
+        out = []
+        if not due_dates_field:
+            return out
+        entries = due_dates_field.split('||') if '||' in due_dates_field else [due_dates_field]
+        for entry in entries:
+            try:
+                due_date, amount, paid = entry.split('|', 2)
+            except Exception:
+                continue
+            out.append({
+                'due_date': due_date,
+                'amount': format_amount(amount),
+                'paid': paid == 'True'
+            })
+        return out
+
     try:
-        if sale_id:
-            sale = Sales.query.filter(
-                and_(
-                    Sales.sale_id== int(sale_id),
-                )
-            ).one_or_none()
-
-            if not sale:
-                return jsonify({'message': 'Reserva no encontrada', 'status': 'ok', 'reservation_status': 'missing'}), 400
-
-            if sale.status == 'cancelado':
-                return jsonify({'message': 'Reserva cancelada, por favor contacta a un administrador', 'status': 'ok', 'reservation_status': 'broken'}), 400
-            
-            payments_list = []
-            payments = Payments.query.filter(Payments.SaleID == sale.sale_id).all()
-            if payments:
-                for entry in payments:
-
-                    # Format the date as dd/mm/yyyy if possible
-                    try:
-                        formatted_date = entry.PaymentDate.strftime('%d/%m/%Y')
-                    except Exception:
-                        formatted_date = str(entry.PaymentDate)
-                    payments_list.append({
-                        'amount': round(int(entry.Amount)/100, 2),
-                        'date': formatted_date,
-                        'paymentMethod': entry.PaymentMethod,
-                        'paymentReference': entry.Reference,
-                        'paymentVerified': entry.Status
-                    })
-
-            information = {}
-
-            event_name = sale.event_rel.name if sale.event else ''
-            venue_name = sale.event_rel.venue.name if sale.event and sale.event_rel.venue else ''
-            event_date = sale.event_rel.date_string if sale.event else ''
-            event_hour = sale.event_rel.hour_string if sale.event else ''
-            
-            if sale.financiamiento_rel and sale.financiamiento_rel.Type == 'reserva':
-
-                tickets = []
-                ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
-                for ticket_id in ticket_ids:
-                    if ticket_id:
-                        ticket = Ticket.query.get(int(ticket_id))
-                        if ticket:
-                            seat = Seat.query.get(ticket.seat_id)
-                            section = Section.query.get(seat.section_id) if seat else None
-                            tickets.append({
-                                'ticket_id': ticket.ticket_id,
-                                'price': round(ticket.price/100, 2),
-                                'status': ticket.status,
-                                'section': section.name if section else None,
-                                'row': seat.row if seat else None,
-                                'number': seat.number if seat else None
-                            })
-
-                fee = sale.fee if sale.fee else 0
-                discount = sale.discount if sale.discount else 0
-
-                information['due_date'] = [sale.financiamiento_rel.Deadline]
-                information['payments'] = payments_list
-                information['type'] = sale.financiamiento_rel.Type
-                information['items'] = tickets
-                information['subtotal'] = round((sale.price)/100, 2)
-                information['total_price'] = round((sale.price + fee - discount)/100, 2)
-                information['paid'] = round(sale.paid/100, 2)
-                information['due'] = round((sale.price + fee - discount - sale.paid)/100, 2)
-                information['fee'] = round(fee)/100
-                information['discount'] = round(discount)/100
-                information['status'] = sale.status
-                information['event'] = event_name
-                information['venue'] = venue_name
-                information['date'] = event_date
-                information['hour'] = event_hour
-                information['locator'] = sale.saleLocator
-                information['StatusFinanciamiento'] = sale.StatusFinanciamiento 
-                information['Fullname'] = [(sale.customer.FirstName + ' ' + sale.customer.LastName) if sale.customer else '']
-                information['Email'] = [sale.customer.Email if sale.customer else '']
-                information['saleId'] = sale.sale_id
-
-            elif sale.financiamiento_rel and sale.financiamiento_rel.Type == 'por cuotas':
-                logging.info('es financiado por cuotas')
-                tickets = []
-                ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
-                for ticket_id in ticket_ids:
-                    if ticket_id:
-                        ticket = Ticket.query.get(int(ticket_id))
-                        if ticket:
-                            seat = Seat.query.get(ticket.seat_id)
-                            section = Section.query.get(seat.section_id) if seat else None
-                            tickets.append({
-                                'ticket_id': ticket.ticket_id,
-                                'price': round(ticket.price/100, 2),
-                                'status': ticket.status,
-                                'section': section.name if section else None,
-                                'row': seat.row if seat else None,
-                                'number': seat.number if seat else None
-                            })
-
-                due_dates = []
-                if sale.due_dates:
-                    due_dates_entries = sale.due_dates.split('||') if '||' in sale.due_dates else [sale.due_dates]
-                    for entry in due_dates_entries:
-                        due_date, amount, paid = entry.split('|', 1)
-                        due_dates.append({
-                            'due_date': due_date,
-                            'amount': round(int(amount)/100, 2),
-                            'paid': paid == 'True'
-                        })
-
-                fee = sale.fee if sale.fee else 0
-                discount = sale.discount if sale.discount else 0
-
-                information['due_dates'] = [due_dates]
-                information['payments'] = payments_list
-                information['type'] = sale.financiamiento_rel.Type
-                information['items'] = tickets
-                information['subtotal'] = round((sale.price)/100, 2)
-                information['total_price'] = round((sale.price + fee - discount)/100, 2)
-                information['paid'] = round(sale.paid/100, 2)
-                information['due'] = round((sale.price + fee - discount - sale.paid)/100, 2)
-                information['fee'] = round(fee)/100
-                information['discount'] = round(discount)/100
-                information['status'] = sale.status
-                information['event'] = event_name
-                information['venue'] = venue_name
-                information['date'] = event_date
-                information['hour'] = event_hour
-                information['locator'] = sale.saleLocator
-                information['StatusFinanciamiento'] = sale.StatusFinanciamiento 
-                information['Fullname'] = [(sale.customer.FirstName + ' ' + sale.customer.LastName) if sale.customer else '']
-                information['Email'] = [sale.customer.Email if sale.customer else '']
-                information['sale_id'] = sale.sale_id
-
-            else:
-                tickets = []
-                ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
-                for ticket_id in ticket_ids:
-                    if ticket_id:
-                        ticket = Ticket.query.get(int(ticket_id))
-                        if ticket:
-                            seat = Seat.query.get(ticket.seat_id)
-                            section = Section.query.get(seat.section_id) if seat else None
-                            tickets.append({
-                                'ticket_id': ticket.ticket_id,
-                                'price': round(ticket.price/100, 2),
-                                'status': ticket.status,
-                                'section': section.name if section else None,
-                                'row': seat.row if seat else None,
-                                'number': seat.number if seat else None
-                            })
-
-                due_dates = []
-                if sale.due_dates:
-                    due_dates_entries = sale.due_dates.split('||') if '||' in sale.due_dates else [sale.due_dates]
-                    for entry in due_dates_entries:
-                        due_date, amount, paid = entry.split('|', 1)
-                        due_dates.append({
-                            'due_date': due_date,
-                            'amount': round(int(amount)/100, 2),
-                            'paid': paid == 'True'
-                        })
-
-                fee = sale.fee if sale.fee else 0
-                discount = sale.discount if sale.discount else 0
-
-                information['due_dates'] = [due_dates]
-                information['payments'] = payments_list
-                information['type'] = "decontado"
-                information['items'] = tickets
-                information['subtotal'] = round((sale.price)/100, 2)
-                information['total_price'] = round((sale.price + fee - discount)/100, 2)
-                information['paid'] = round(sale.paid/100, 2)
-                information['due'] = round((sale.price + fee - discount - sale.paid)/100, 2)
-                information['fee'] = round(fee)/100
-                information['discount'] = round(discount)/100
-                information['status'] = sale.status
-                information['event'] = event_name
-                information['venue'] = venue_name
-                information['date'] = event_date
-                information['hour'] = event_hour
-                information['locator'] = sale.saleLocator
-                information['StatusFinanciamiento'] = sale.StatusFinanciamiento 
-                information['Fullname'] = [(sale.customer.FirstName + ' ' + sale.customer.LastName) if sale.customer else '']
-                information['Email'] = [sale.customer.Email if sale.customer else '']
-                information['sale_id'] = sale.sale_id
-
-            return jsonify({'message': 'Reserva existente', 'status': 'ok', 'information': information}), 200
-
-        else:
+        if not sale_id:
             return jsonify({'message': 'Reserva no encontrada', 'status': 'error'}), 400
+
+        sale = Sales.query.filter(Sales.sale_id == int(sale_id)).one_or_none()
+        if not sale:
+            return jsonify({'message': 'Reserva no encontrada', 'status': 'ok', 'reservation_status': 'missing'}), 400
+
+        if sale.status == 'cancelado':
+            return jsonify({'message': 'Reserva cancelada, por favor contacta a un administrador', 'status': 'ok', 'reservation_status': 'broken'}), 400
+
+        payments = Payments.query.filter(Payments.SaleID == sale.sale_id).all()
+        payments_list = build_payments_list(payments)
+
+        event_name = sale.event_rel.name if sale.event_rel else ''
+        venue_name = sale.event_rel.venue.name if sale.event_rel and sale.event_rel.venue else ''
+        event_date = sale.event_rel.date_string if sale.event_rel else ''
+        event_hour = sale.event_rel.hour_string if sale.event_rel else ''
+
+        tickets = build_tickets_from_sale(sale)
+
+        fee = sale.fee if sale.fee else 0
+        discount = sale.discount if sale.discount else 0
+
+        common_info = {
+            'payments': payments_list,
+            'items': tickets,
+            'subtotal': format_amount(sale.price),
+            'total_price': format_amount((sale.price or 0) + fee - discount),
+            'paid': format_amount(sale.paid),
+            'due': format_amount((sale.price or 0) + fee - discount - (sale.paid or 0)),
+            'fee': round(fee / 100, 2),
+            'discount': round(discount / 100, 2),
+            'status': sale.status,
+            'event': event_name,
+            'venue': venue_name,
+            'date': event_date,
+            'hour': event_hour,
+            'locator': sale.saleLocator,
+            'StatusFinanciamiento': sale.StatusFinanciamiento,
+            'Fullname': [(sale.customer.FirstName + ' ' + sale.customer.LastName) if sale.customer else ''],
+            'Email': [sale.customer.Email if sale.customer else ''],
+            'sale_id': sale.sale_id
+        }
+
+        information = {}
+
+        financiamiento = getattr(sale, 'financiamiento_rel', None)
+        financiamiento_type = financiamiento.Type if financiamiento and hasattr(financiamiento, 'Type') else None
+
+        if financiamiento and financiamiento_type == 'reserva':
+            # reserva: fecha limite simple, payments list, etc.
+            information.update(common_info)
+            information['due_date'] = [financiamiento.Deadline] if hasattr(financiamiento, 'Deadline') else []
+            information['payments'] = payments_list
+            information['type'] = financiamiento_type
+            information['items'] = tickets
+            # keep compatibility with prior code that used 'saleId' once (normalize to sale_id)
+            # previously returned 'saleId' in first branch — now standardized
+        elif financiamiento and financiamiento_type == 'por cuotas':
+            due_dates = parse_due_dates_field(sale.due_dates)
+            information.update(common_info)
+            information['due_dates'] = [due_dates]
+            information['payments'] = payments_list
+            information['type'] = financiamiento_type
+            information['items'] = tickets
+        else:
+            # decontado / default
+            due_dates = parse_due_dates_field(sale.due_dates)
+            information.update(common_info)
+            information['due_dates'] = [due_dates]
+            information['payments'] = payments_list
+            information['type'] = "decontado"
+            information['items'] = tickets
+
+        return jsonify({'message': 'Reserva existente', 'status': 'ok', 'information': information}), 200
+
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error al buscar reserva: {e}")
+        logging.error(f"Error al buscar reserva: {e}", exc_info=True)
         return jsonify({'message': 'Error al buscar reserva', 'status': 'error'}), 500
     
 @backend.route('/new-abono', methods=['POST']) #pagos realizados por el cliente
@@ -2299,8 +2422,13 @@ def approve_abono():
 
         if payment.sale.status == 'cancelado':
             return jsonify({'message': 'La venta está cancelada, no se pueden agregar abonos', 'status': 'error'}), 400
+        
+        total_due = int(payment.sale.price + payment.sale.fee - payment.sale.discount)
+        total_after_payment = int(payment.sale.paid + received)
 
-        if (payment.sale.paid + received) > (payment.sale.price + payment.sale.fee - payment.sale.discount):
+        print(total_due, total_after_payment)
+
+        if (total_after_payment - total_due ) > 0:  # margen de 500 centavos (5 unidades monetarias)
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         # 3️⃣ Datos auxiliares

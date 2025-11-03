@@ -89,13 +89,15 @@ class Event(db.Model):
     bannerImageDevice = Column(String(500))
     active = Column(Boolean, default=True)
     event_id_provider = Column(Integer) # ID del evento en el proveedor externo (Tickera) #solo si aplica (API)
-    event_provider = Column(Integer) # ID del proveedor externo (Tickera)
+    event_provider = Column(Integer, ForeignKey('providers.ProviderID'), nullable=True) # Proveedor externo (Tickera u otro)
     Fee = Column(Integer) # Tarifa del evento
     
     # Relación one-to-one con la tabla Venue
     venue = relationship('Venue', back_populates='events')
     # Relación one-to-many con la tabla Tickets
     tickets = relationship('Ticket', back_populates='event')
+    # Relación one-to-many con la tabla Providers
+    provider = relationship('Providers', backref='events')
 
 # Tabla para las secciones dentro de un lugar (ej: Gradería, VIP)
 class Section(db.Model):
@@ -199,12 +201,16 @@ class Sales(db.Model):
     fee = Column(Integer, default=0)  # Fee de Tickera
     discount = Column(Integer, default=0) # descuento
     ContactPhoneNumber = Column(String(20))  # número de teléfono de contacto para la venta
+    liquidado = Column(Boolean, default=False)  # Indica si la venta ha sido liquidada a la productora
+    liquidation_id = Column(Integer, ForeignKey('liquidations.LiquidationID'))  # ID de liquidación si aplica
 
     # Relaciones
     customer = relationship('EventsUsers', backref='sales')
     financiamiento_rel = relationship('Financiamientos', back_populates='sales')
     event_rel = relationship('Event', backref='sales')
     tickets = relationship('Ticket', back_populates='sale')
+    liquidation = relationship('Liquidations', back_populates='sales')
+
 
 class Logs(db.Model):
     __tablename__ = 'logs'
@@ -253,6 +259,29 @@ class Providers(db.Model):
     TickeraUsername = Column(String, nullable=True)
     ProviderName = Column(String, nullable=True)
     TickeraAuthToken = Column(String, nullable=True)
+
+class Liquidations(db.Model):
+    __tablename__ = 'liquidations'
+
+    LiquidationID = Column(Integer, primary_key=True)
+    EventID = Column(Integer, ForeignKey('events_ft.event_id'), nullable=False)
+    Amount = Column(Integer, nullable=False)
+    AmountBS = Column(Integer, nullable=True)  # Monto en bolívares
+    LiquidationDate = Column(Date, nullable=False, default=db.func.current_date())
+    CreatedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True)
+    ProviderID = Column(Integer, ForeignKey('providers.ProviderID'), nullable=True)
+    Details = Column(String)
+    PaymentMethod = Column(String)  # 'bank_transfer', 'paypal', etc.
+    Reference = Column(String)  # referencia de pago
+    Discount = Column(Integer, default=0)  # descuento
+    AdditionalFees = Column(Integer, default=0)  # cargos adicionales
+    Comments = Column(String)  # comentarios
+    PdfLink = Column(String)  # enlace al comprobante en PDF
+    # Relación con la tabla EventsUsers
+    creator = relationship('EventsUsers', backref='liquidations')
+    event = relationship('Event', backref='liquidations')
+    provider = relationship('Providers', backref='liquidations')
+    sales = relationship('Sales', back_populates='liquidation') # Relación con la tabla Sales
 
 
 

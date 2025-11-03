@@ -182,7 +182,7 @@ def handle_checkout_completed(data, config):
             user_id=user_id,
             status='pagado',
             created_by=user_id,
-            StatusFinanciamiento='decontado',
+            StatusFinanciamiento='pagado',
             event=event.event_id,
             fee=total_fee,
             discount=0,
