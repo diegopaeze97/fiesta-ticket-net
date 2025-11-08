@@ -2,7 +2,7 @@ from flask import request, jsonify, Blueprint, make_response, session, current_a
 from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Financiamientos, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -23,6 +23,7 @@ import time
 import calendar
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+import backend.utils as utils_backend
 
 backend = Blueprint('backend', __name__)
 
@@ -1158,16 +1159,21 @@ def create_liquidation():
         # Información de ventas
         query = Sales.query.options(
             joinedload(Sales.customer).load_only(EventsUsers.Email),
-            joinedload(Sales.tickets).load_only(Ticket.ticket_id, Ticket.seat_id),
-            joinedload(Sales.event_rel).load_only(Event.name, Event.event_id).joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
+            # Eager-load tickets and their related seat and section to avoid N+1 and ensure attributes are available
+            joinedload(Sales.tickets).load_only(Ticket.ticket_id, Ticket.seat_id, Ticket.price)
+                .joinedload(Ticket.seat).load_only(Seat.section_id, Seat.row, Seat.number)
+                .joinedload(Seat.section).load_only(Section.section_id, Section.name),
+            joinedload(Sales.payment).load_only(Payments.PaymentMethod),
+            joinedload(Sales.event_rel).load_only(Event.name, Event.event_id, Event.date_string, Event.hour_string, Event.venue_id, Event.liquidado, Event.total_sales, Event.gross_sales, Event.total_fees)
+                .joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
             load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.saleLink, Sales.creation_date, Sales.liquidado)
         )
 
         filters = []
 
-        #filters.append(Sales.status=='pagado')
+        filters.append(Sales.status=='pagado')
         filters.append(Sales.event==int(event))
-        #filters.append(Sales.liquidado!=True)
+        filters.append(Sales.liquidado==False)
 
         if filters:
             query = query.filter(and_(*filters))
@@ -1177,16 +1183,20 @@ def create_liquidation():
 
         if sales:
 
+            print (sales[0].event_rel)
+
             event_info = {
                 "event_id": sales[0].event_rel.event_id if sales[0].event_rel else '',
                 "provider_name": sales[0].event_rel.provider.ProviderName if (sales[0].event_rel and sales[0].event_rel.provider) else '',
                 "event": sales[0].event_rel.name,
                 "event_date": sales[0].event_rel.date_string,
                 "event_hour": sales[0].event_rel.hour_string,
-                "event_place": sales[0].event_rel.venue.name
+                "event_place": sales[0].event_rel.venue.name,
+                "total_liquidated": round((getattr(sales[0].event_rel, 'liquidado', 0) or 0)/100, 2),
+                "total_sales": getattr(sales[0].event_rel, 'total_sales', 0) or 0,
+                "gross_sales": round((getattr(sales[0].event_rel, 'gross_sales', 0) or 0)/100, 2),
+                "total_fees": round((getattr(sales[0].event_rel, 'total_fees', 0) or 0)/100, 2)
             }
-
-            print(event_info)
 
             for sale in sales:
                 sales_data.append({
@@ -1200,13 +1210,19 @@ def create_liquidation():
                     'liquidado': sale.liquidado,
                     'tickets': [{
                         'ticket_id': ticket.ticket_id,
-                        'seat_id': ticket.seat_id
-                    } for ticket in sale.tickets]
+                        'sale_id': sale.sale_id,
+                        'price': round(ticket.price/100, 2),
+                        'section': ticket.seat.section.name if ticket.seat and ticket.seat.section else '',
+                        'row': ticket.seat.row if ticket.seat else '',
+                        'number': ticket.seat.number if ticket.seat else '',
+                        'dateofPurchase': ticket.emission_date.isoformat() if ticket.emission_date else ''
+                    } for ticket in sale.tickets],
+                    'paymentsMethod': sale.payment.PaymentMethod if sale.payment else ''
                 })
 
         else:
             event_obj = Event.query.options(
-                load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id),
+                load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id, Event.liquidado, Event.total_sales, Event.gross_sales, Event.total_fees),
                 joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
                 joinedload(Event.venue).load_only(Venue.venue_id, Venue.name)
             ).filter(Event.event_id == event).one_or_none()
@@ -1220,14 +1236,16 @@ def create_liquidation():
                 "event": event_obj.name,
                 "event_date": event_obj.date_string,
                 "event_hour": event_obj.hour_string,
-                "event_place": event_obj.venue.name if event_obj.venue else ''
-            }
+                "event_place": event_obj.venue.name if event_obj.venue else '',
+                "total_liquidated": round((getattr(event_obj, 'liquidado', 0) or 0)/100, 2),
+                "total_sales": getattr(event_obj, 'total_sales', 0) or 0,
+                "gross_sales": round((getattr(event_obj, 'gross_sales', 0) or 0)/100, 2),
+                "total_fees": round((getattr(event_obj, 'total_fees', 0) or 0)/100, 2)
+                }
 
 
 
         sales_data = sorted(sales_data, key=lambda x: x['saleDate'], reverse=True)
-
-        print(sales_data)
 
         return jsonify({"sales": sales_data, "status": "ok", "event": event_info}), 200
 
@@ -1236,6 +1254,448 @@ def create_liquidation():
         db.session.rollback()
         logging.error(f"Error al crear evento: {e}")
         return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
+    
+@backend.route('/create-liquidation', methods=['POST']) #ver paquetes o ventas en general
+@roles_required(allowed_roles=["admin"])
+def create_liquidation_post():
+    try:
+        data = request.get_json()
+        event_str = data.get('event_id', '')
+        seats = data.get('seats', [])
+        sections = data.get('sections', [])
+        totals = data.get('totals', {})
+        additionalCharges = data.get('additionalCharges', {})
+        discounts = data.get('discounts', {})
+        payment = data.get('payment', {})
+        comments = data.get('comments', '')
+
+        if not event_str or not seats or not sections or not totals or not payment:
+            return jsonify({'message': 'faltan parámetros', 'status': 'error'}), 400
+        
+        sales_list = [int(seats_item.get('sale_id')) for seats_item in seats if seats_item.get('sale_id')]
+        #eliminar duplicados
+        sales_list = list(set(sales_list))  
+        
+        sales = Sales.query.options(
+            joinedload(Sales.customer).load_only(EventsUsers.Email),
+            # Eager-load tickets and their related seat and section to avoid N+1 and ensure attributes are available
+            joinedload(Sales.tickets).load_only(Ticket.ticket_id, Ticket.seat_id, Ticket.price)
+                .joinedload(Ticket.seat).load_only(Seat.section_id, Seat.row, Seat.number)
+                .joinedload(Seat.section).load_only(Section.section_id, Section.name),
+            joinedload(Sales.payment).load_only(Payments.PaymentMethod),
+            joinedload(Sales.event_rel).load_only(Event.name, Event.event_id)
+                .joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName, Providers.ProviderEmail),
+            load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.saleLink, Sales.creation_date, Sales.liquidado)
+        ).filter(
+            and_(
+                Sales.sale_id.in_(sales_list),
+                Sales.status=='pagado',
+                Sales.event==int(event_str),
+                Sales.liquidado!=True
+            )
+        ).all() 
+
+        if not sales:
+            return jsonify({'message': 'No se encontraron ventas válidas para liquidar', 'status': 'error'}), 400
+
+        if len(sales) != len(sales_list):
+            return jsonify({'message': 'Algunas ventas no se encontraron o ya están liquidadas', 'status': 'error'}), 400
+
+        total_liquidation = totals.get('totalFinal', 0)
+        discounts_string = totals.get('totalDiscounts', 0)
+        # Crear string additionalCharges en formato "name,price||name,price||..."
+        if isinstance(additionalCharges, list):
+            additional_charges_string = "||".join(
+            f"{str(item.get('name','')).strip()},{int(item.get('price', 0))}"
+            for item in additionalCharges
+            if item and item.get('name') is not None
+            )
+        else:
+            additional_charges_string = ""
+
+        # Crear string additionalCharges en formato "name,price||name,price||..."
+        if isinstance(discounts, list):
+            discounts_string = "||".join(
+            f"{str(item.get('name','')).strip()},{int(item.get('price', 0))}"
+            for item in discounts
+            if item and item.get('name') is not None
+            )
+        else:
+            discounts_string = ""
+
+        # Normalizar totales usados más abajo
+
+        event_provider = sales[0].event_rel.provider.ProviderID if (sales[0].event_rel and sales[0].event_rel.provider) else None
+        
+        liquidation = Liquidations(
+            EventID=int(event_str),
+            Amount=total_liquidation*100,
+            AmountBS=payment.get('amountBolivares', 0)*100,
+            LiquidationDate=payment.get('date'),
+            CreatedBy=get_jwt().get("id"),
+            ProviderID=int(event_provider) if event_provider else None,
+            PaymentMethod=payment.get('method', ''),   
+            Reference=payment.get('reference', ''),
+            Discount=discounts_string,
+            AdditionalFees=additional_charges_string,
+            Comments=comments
+        )
+        db.session.add(liquidation)
+        db.session.flush()  # para obtener liquidation_id
+
+        sales_total = 0
+        for sale in sales:
+            sale.liquidado = True
+            sale.liquidation_id = liquidation.LiquidationID
+            sales_total += (sale.price)
+
+        liquidated_amount_net = totals.get('totalGlobal', 0)*100 # convertir a centavos, el total correspondiente a los boletos vendidos
+
+        if sales_total != liquidated_amount_net:
+            return jsonify({'message': 'Los totales no coinciden', 'status': 'error'}), 400
+
+        event = sales[0].event_rel
+
+        if event.liquidado:
+            event.liquidado += liquidated_amount_net 
+        else: event.liquidado = liquidated_amount_net
+
+        # -------------------------
+        # Generar PDF en memoria
+        # -------------------------
+        try:
+            def format_currency(value, symbol="$", decimals=2):
+                """
+                Formatea un número como moneda: por ejemplo 1234.5 -> $1,234.50
+                Uso en Jinja: {{ value | currency }}
+                """
+                try:
+                    v = float(value or 0)
+                except Exception:
+                    # si no es convertible, devolver como string
+                    return str(value)
+                # separador de miles con coma y punto decimal
+                return f"{symbol}{v:,.{decimals}f}"
+            def format_currency_bsD(value, symbol="BsD", decimals=2):
+                """
+                Formatea un número como moneda: por ejemplo 1234.5 -> BsD1,234.50
+                Uso en Jinja: {{ value | currency_Bsd }}
+                """
+                try:
+                    v = float(value or 0)
+                except Exception:
+                    # si no es convertible, devolver como string
+                    return str(value)
+                # separador de miles con coma y punto decimal
+                return f"{symbol}{v:,.{decimals}f}"
+            def format_currency_cents_to_dollars(value, symbol="$", decimals=2):
+                """
+                Formatea un número como moneda: por ejemplo 123450 -> $1,234.50
+                Uso en Jinja: {{ value | currency }}
+                """
+                try:
+                    v = float(value/100 or 0)
+                except Exception:
+                    # si no es convertible, devolver como string
+                    return str(value/100)
+                # separador de miles con coma y punto decimal
+                return f"{symbol}{v:,.{decimals}f}"
+
+            current_app.jinja_env.filters['currency'] = format_currency
+            current_app.jinja_env.filters['currency_Bsd'] = format_currency_bsD
+            current_app.jinja_env.filters['currency_cents_to_dollars'] = format_currency_cents_to_dollars
+            pdf_bytes = utils_backend.generate_pdf_with_weasyprint(liquidation, event, sales, totals, discounts, additionalCharges, payment, comments, sections)
+        except Exception as e:
+            logging.error(f"Error generando PDF de liquidación: {e}")
+            return jsonify({'message': 'Error generando PDF', 'status': 'error'}), 500
+
+        # -------------------------
+        # Subir a S3
+        # -------------------------
+        S3_BUCKET = "imagenes-fiestatravel"
+        if not S3_BUCKET:
+            logging.error("No se configuró S3_BUCKET")
+            return jsonify({'message': 'Configuración de almacenamiento no encontrada', 'status': 'error'}), 500
+
+        s3_key = f"liquidations/{liquidation.LiquidationID}.pdf"
+        uploaded = utils_backend.upload_to_s3(s3, S3_BUCKET, s3_key, pdf_bytes, content_type='application/pdf')
+        if not uploaded:
+            # No hacemos rollback porque la DB fue commiteada, pero informamos
+            return jsonify({'message': 'Error subiendo PDF a almacenamiento', 'status': 'error'}), 500
+
+        # -------------------------
+        # Enviar correo con adjunto
+        # -------------------------
+        # Remitente y destinatarios
+        sender = current_app.config.get('MAIL_USERNAME')
+        event_provider_email = sales[0].event_rel.provider.ProviderEmail
+
+        admins = EventsUsers.query.filter(EventsUsers.role.in_(['admin'])).all()
+
+        admins_emails = [admin.Email for admin in admins if admin.Email]
+
+        recipients = [sender, event_provider_email]  # Enviar al admin
+
+        recipients = list(set(recipients + admins_emails))  # Evitar duplicados
+
+        attachment_filename = f"liquidation_{liquidation.LiquidationID}.pdf"
+
+        if not sender:
+            logging.error("No se configuró SENDER_EMAIL para enviar correos")
+            # No consideramos esto crítico para la creación de la liquidación; devolvemos éxito pero advertencia
+            return jsonify({
+                "message": "liquidación creada con éxito, pero no se pudo enviar correo (SENDER no configurado)",
+                "status": "ok",
+                "s3_key": s3_key
+            }), 200
+
+        try:
+            emailed = utils_backend.send_email_with_attachment(sender, recipients, pdf_bytes, attachment_filename)
+            if not emailed:
+                logging.error("Fallo al enviar correo de liquidación")
+                # No revertimos DB; informamos al cliente
+                return jsonify({
+                    "message": "liquidación creada, pero fallo al enviar correo",
+                    "status": "ok",
+                    "s3_key": s3_key
+                }), 200
+        except Exception as e:
+            logging.error(f"Error enviando correo de liquidación: {e}")
+            return jsonify({
+                "message": "liquidación creada, pero fallo al enviar correo",
+                "status": "ok",
+                "s3_key": s3_key
+            }), 200
+
+
+        db.session.commit()
+
+        return jsonify({"message": "liquidación creada con éxito", "status": "ok"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al crear evento: {e}")
+        return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
+    finally:
+        try:
+            db.session.close()
+        except Exception:
+            pass
+
+@backend.route('/view-liquidations', methods=['GET']) #ver paquetes o ventas en general
+@roles_required(allowed_roles=["admin"])
+def view_liquidations():
+    try:
+        event_str = request.args.get('id_event', '')
+
+        if not event_str or not event_str.isdigit():
+            return jsonify({'message': 'faltan parámetros o formato inválido', 'status': 'error'}), 400
+
+        liquidations = Liquidations.query.options(
+            # eager-load provider basic fields
+            joinedload(Liquidations.provider).load_only(Providers.ProviderName, Providers.ProviderEmail),
+            # eager-load sales and their tickets and seat->section to avoid N+1
+            joinedload(Liquidations.sales)
+                .load_only(Sales.sale_id, Sales.price, Sales.saleLink)
+                .joinedload(Sales.tickets)
+                    .load_only(Ticket.ticket_id, Ticket.price, Ticket.seat_id)
+                    .joinedload(Ticket.seat)
+                        .load_only(Seat.section_id, Seat.row, Seat.number)
+                        .joinedload(Seat.section)
+                            .load_only(Section.section_id, Section.name),
+            # load only necessary liquidation fields (include Discount and AdditionalFees used later)
+            load_only(Liquidations.LiquidationID, Liquidations.EventID, Liquidations.Amount, Liquidations.AmountBS, Liquidations.LiquidationDate, Liquidations.CreatedBy, Liquidations.Comments, Liquidations.Discount, Liquidations.AdditionalFees)
+        ).filter(Liquidations.EventID == int(event_str)).all()
+
+        liquidations_data = []
+
+        if liquidations:
+
+            event_info = {
+                "event_id": liquidations[0].sales[0].event_rel.event_id,
+                "provider_name": liquidations[0].sales[0].event_rel.provider.ProviderName,
+                "event": liquidations[0].sales[0].event_rel.name,
+                "event_date": liquidations[0].sales[0].event_rel.date_string,
+                "event_hour": liquidations[0].sales[0].event_rel.hour_string,
+                "event_place": liquidations[0].sales[0].event_rel.venue.name,
+                "total_liquidated": round((liquidations[0].sales[0].event_rel.liquidado if liquidations[0].sales[0].event_rel.liquidado else 0)/100, 2),
+                "total_sales": (liquidations[0].sales[0].event_rel.total_sales if liquidations[0].sales[0].event_rel.total_sales else 0),
+                "gross_sales": round((liquidations[0].sales[0].event_rel.gross_sales if liquidations[0].sales[0].event_rel.gross_sales else 0)/100, 2),
+                "total_fees": round((liquidations[0].sales[0].event_rel.total_fees if liquidations[0].sales[0].event_rel.total_fees else 0)/100, 2),
+            }
+
+            for liquidation in liquidations:
+
+                liquidation_dict= {
+                    'liquidation_id': liquidation.LiquidationID,
+                    'event_id': liquidation.EventID,
+                    'amount_usd': round(liquidation.Amount/100, 2),
+                    'amount_bsd': round(liquidation.AmountBS/100, 2),
+                    'liquidation_date': liquidation.LiquidationDate.isoformat() if liquidation.LiquidationDate else '',
+                    'created_by': liquidation.CreatedBy,
+                    'comments': liquidation.Comments,
+                    'payment_method': liquidation.PaymentMethod,
+                    'reference': liquidation.Reference
+                }
+
+                if liquidation.Discount:
+                    discounts_list = []
+                    discounts_items = liquidation.Discount.split('||')
+                    for item in discounts_items:
+                        try:
+                            name, price = item.split(',', 1)
+                            discounts_list.append({
+                                'name': name,
+                                'price': int(price)
+                            })
+                        except Exception:
+                            continue
+                    liquidation_dict['discounts'] = discounts_list
+
+                if liquidation.AdditionalFees:
+                    additional_fees_list = []
+                    additional_fees_items = liquidation.AdditionalFees.split('||')
+                    for item in additional_fees_items:
+                        try:
+                            name, price = item.split(',', 1)
+                            additional_fees_list.append({
+                                'name': name,
+                                'price': int(price)
+                            })
+                        except Exception:
+                            continue
+                    liquidation_dict['additional_charges'] = additional_fees_list
+
+                if liquidation.sales:
+                    tickets = []
+                    for sale in liquidation.sales:
+                        if not sale.tickets:
+                            continue
+                        for ticket in sale.tickets:
+                            tickets.append({
+                                'ticket_id': ticket.ticket_id,
+                                'sale_id': sale.sale_id,
+                                'price': round(ticket.price/100, 2),
+                                'section': ticket.seat.section.name if ticket.seat and ticket.seat.section else '',
+                                'row': ticket.seat.row if ticket.seat else '',
+                                'number': ticket.seat.number if ticket.seat else '',
+                                'dateofPurchase': ticket.emission_date.isoformat() if ticket.emission_date else ''
+                            })
+                    liquidation_dict['tickets'] = tickets
+
+                liquidations_data.append(liquidation_dict)
+            liquidations_data.sort(key=lambda x: x['liquidation_date'], reverse=True)
+
+            return jsonify({"liquidations": liquidations_data, "event": event_info ,"status": "ok"}), 200
+            
+        event_obj = Event.query.options(
+            load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id, Event.liquidado, Event.total_sales, Event.gross_sales, Event.total_fees),
+            joinedload(Event.provider).load_only(Providers.ProviderID, Providers.ProviderName),
+            joinedload(Event.venue).load_only(Venue.venue_id, Venue.name)
+        ).filter(Event.event_id == int(event_str)).one_or_none()
+
+        if not event_obj:
+            return jsonify({"message": "No se encontró el evento"}), 404
+        
+        event_info = {
+            "event_id": event_obj.event_id,
+            "provider_name": event_obj.provider.ProviderName if (event_obj.provider) else '',
+            "event": event_obj.name,
+            "event_date": event_obj.date_string,
+            "event_hour": event_obj.hour_string,
+            "event_place": event_obj.venue.name if event_obj.venue else '',
+            "total_liquidated": round((event_obj.liquidado if event_obj.liquidado else 0)/100, 2),
+            "total_sales": event_obj.total_sales,
+            "gross_sales": round((event_obj.gross_sales if event_obj.liquidado else 0)/100, 2),
+            "total_fees": round((event_obj.total_fees if event_obj.liquidado else 0)/100, 2)
+        }
+
+        print(event_info)
+
+        return jsonify({"event": event_info, "status": "ok"}), 200
+    except Exception as e:
+        logging.error(f"Error al procesar liquidación: {e}")
+        return jsonify({'message': 'Error al procesar liquidaciones', 'status': 'error'}), 500
+    finally:
+        try:
+            db.session.close()
+        except Exception:
+            pass
+
+@backend.route('delete-liquidation', methods=['POST'])
+@roles_required(allowed_roles=["admin"])
+def delete_liquidation():
+    try:
+        data = request.get_json()
+        liquidation_id = data.get('liquidationId', '')
+
+        if not liquidation_id or not str(liquidation_id).isdigit():
+            return jsonify({'message': 'Faltan parámetros o formato inválido', 'status': 'error'}), 400
+
+        liquidation = Liquidations.query.filter(Liquidations.LiquidationID == int(liquidation_id)).one_or_none()
+
+        if not liquidation:
+            return jsonify({'message': 'No se encontró la liquidación', 'status': 'error'}), 404
+
+        # Marcar las ventas asociadas como no liquidadas
+        liquidated_amount_net = 0
+        for sale in liquidation.sales: # recorrer las ventas asociadas a la liquidación
+            sale.liquidado = False
+            sale.liquidation_id = None
+            liquidated_amount_net += sale.price # sumar el total de las ventas liquidadas
+
+        liquidation.event.liquidado -= liquidated_amount_net if  liquidation.event.liquidado else liquidated_amount_net # Ajustar el total liquidado del evento
+
+        db.session.delete(liquidation) # Eliminar la liquidación
+
+        #ahora notificamos al proveedor por email y a los admins
+        sender = current_app.config.get('MAIL_USERNAME')
+        provider_email = liquidation.provider.ProviderEmail if liquidation.provider else None   
+        admins = EventsUsers.query.filter(EventsUsers.role.in_(['admin'])).all()
+
+        admins_emails = [admin.Email for admin in admins if admin.Email]
+
+        recipients = [sender, provider_email]  # Enviar al admin
+        recipients = list(set(recipients + admins_emails))  # Evitar duplicados
+
+        if sender and provider_email:
+            try:
+                subject = f"Notificación de eliminación de liquidación #{liquidation.LiquidationID}"
+                body_text = f"""
+Estimado proveedor,
+
+Le informamos que la liquidación con ID #{liquidation.LiquidationID} correspondiente al evento ID #{liquidation.EventID} ha sido eliminada del sistema por un administrador.
+
+Si tiene alguna pregunta o necesita más información, no dude en contactarnos.
+
+Atentamente,
+Equipo de Fiesta Ticket
+                """
+                try:
+                    msg = Message(subject, sender=sender, recipients=recipients)
+                    msg.body = body_text
+
+                    mail.send(msg)
+                except Exception as e:
+                    return jsonify({'message': 'Error enviando notificación por correo', 'status': 'error'}), 500
+                
+            except Exception as e:
+                return jsonify({'message': 'Error enviando notificación por correo', 'status': 'error'}), 500
+
+        db.session.commit()
+
+        return jsonify({'message': 'Liquidación eliminada con éxito', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al eliminar liquidación: {e}")
+        return jsonify({'message': 'Error al eliminar liquidación', 'status': 'error'}), 500
+    finally:
+        try:
+            db.session.close()
+        except Exception:
+            pass
+
     
 @backend.route('/load-available-tickets', methods=['GET'])
 @roles_required(allowed_roles=["admin", "tiquetero"])
@@ -2426,14 +2886,13 @@ def approve_abono():
         total_due = int(payment.sale.price + payment.sale.fee - payment.sale.discount)
         total_after_payment = int(payment.sale.paid + received)
 
-        print(total_due, total_after_payment)
-
         if (total_after_payment - total_due ) > 0:  # margen de 500 centavos (5 unidades monetarias)
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         # 3️⃣ Datos auxiliares
         customer = payment.sale.customer
         paymentDeadline = payment.sale.financiamiento_rel.Deadline if (payment.sale.financiamiento_rel and payment.sale.financiamiento_rel.Deadline) else ''
+        event = payment.sale.event_rel
 
         # 4️⃣ Verificar tipo de evento
         if payment.sale.event_rel.Type == 'Espectaculo':
@@ -2509,7 +2968,6 @@ def approve_abono():
                             tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
                             tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
                             url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
-                            event = payment.sale.event_rel
 
                             logging.info("Liberando tickets en Tickera...")
 
@@ -2630,6 +3088,8 @@ def approve_abono():
                     payment.sale.status = 'pagado' #cambiamos el estado de la venta a aprobado si ya se pagó todo
                     ticket_ids = payment.sale.ticket_ids.split('|') if '|' in payment.sale.ticket_ids else [payment.sale.ticket_ids]
 
+                    total_fee= 0
+
                     for ticket_id in ticket_ids:
                         if not ticket_id:
                             continue
@@ -2677,6 +3137,8 @@ def approve_abono():
                             'localizador': localizador
                         }
 
+                        total_fee += ticket.fee if ticket.fee else 0
+
                         utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
 
                     IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
@@ -2703,6 +3165,12 @@ def approve_abono():
                         'title': 'Tu pago ha sido procesado exitosamente',
                         'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
                     }
+
+                    # Actualizar métricas del evento (asegurar que None se trate como 0)
+                    event.total_sales = (event.total_sales or 0) + 1
+                    event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
+                    event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
+
                     utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
                 else:
 
@@ -2729,6 +3197,7 @@ def approve_abono():
                     }
 
                     utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+
             db.session.commit()
 
         return jsonify({'message': 'Abono registrado exitosamente', 'status': 'ok'}), 200
@@ -3109,3 +3578,7 @@ def load_users():
         db.session.rollback()
         logging.error(f"Error loading dashboard data: {e}")
         return jsonify({'message': 'Error loading dashboard data', 'status': 'error'}), 500
+    finally:
+        db.session.close()  
+
+    
