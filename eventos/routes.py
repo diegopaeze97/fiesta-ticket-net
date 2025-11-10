@@ -244,7 +244,7 @@ def get_map():
         else:
             process_end = time.perf_counter()
             total_end = time.perf_counter()
-            print(f"⏱ Request externo fallido en {req_end - req_start:.4f} segundos")
+            logging.error(f"⏱ Request externo fallido en {req_end - req_start:.4f} segundos")
 
             return jsonify({
                 "status": "error",
@@ -292,8 +292,6 @@ def get_events():
                 "bannerImageDevice": event.bannerImageDevice
             }
             events_list.append(event_data)
-
-        print(f"Eventos encontrados: {events_list}")
 
         return jsonify({"events": events_list, "status": "ok"}), 200
     except Exception as e:
