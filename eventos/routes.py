@@ -221,7 +221,12 @@ def get_map():
                 "name": event.name,
                 "date": event.date_string,
                 "hour": event.hour_string,
-                "place": event.venue.name if event.venue else None
+                "place": event.venue.name if event.venue else None,
+                "description": event.description if hasattr(event, 'description') else None,
+                "duration": event.duration if hasattr(event, 'duration') else None,
+                "clasification": event.clasification if hasattr(event, 'clasification') else None,
+                "age_restriction": event.age_restriction if hasattr(event, 'age_restriction') else None,
+                "mainImage": event.mainImage if hasattr(event, 'mainImage') else None,
             }
 
             return jsonify(
@@ -296,7 +301,7 @@ def get_events():
         return jsonify({"message": "Error al obtener eventos", "status": "error"}), 500
     
 @events.route('/buy-tickets', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero"])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def buy_tickets():
     try:
         # ---------------------------------------------------------------
@@ -642,7 +647,7 @@ def buy_tickets():
         db.session.close()
 
 @events.route('/get-paymentdetails', methods=['GET'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero"])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def get_paymentdetails():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')
@@ -764,7 +769,7 @@ def get_paymentdetails():
         db.session.close()
 
 @events.route('/block-tickets', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero"])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def block_tickets():
     user_id = get_jwt().get("id")
     data = request.get_json()
@@ -1398,7 +1403,7 @@ def canjear_ticket():
 
 
 @events.route("/create-stripe-checkout-session", methods=["GET"])
-@roles_required(allowed_roles=["admin", "tiquetero", "customer"])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def create_stripe_checkout_session():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')

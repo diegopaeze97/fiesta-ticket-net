@@ -42,8 +42,6 @@ def register():
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
     
-    print(cedula)
-    
     if not utils.cedula_pattern.match(cedula.upper()):
         return jsonify(message='Numero de cedula invalido'), 400
     
@@ -146,7 +144,7 @@ def validate_email_verify_code():
     print("Email recibido para verificación:", email)
     
     try:
-        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role == 'customer').one_or_none() # Buscamos el usuario
+        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role != 'unverified_customer').one_or_none() # Buscamos el usuario
 
         if user is None:
             return jsonify({'message': 'Usuario no encontrado'}), 404
@@ -250,7 +248,7 @@ def validate_email_resend_code():
         if not email or not isinstance(email, str):
             return jsonify({'message': 'Correo electrónico inválido'}), 400
         
-        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role == 'customer').one_or_none() # Buscamos el usuario
+        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role != 'unverified_customer').one_or_none() # Buscamos el usuario
 
         if user is None:
             return jsonify({'message': 'Usuario no encontrado'}), 404
@@ -377,7 +375,7 @@ def recovery_password_send_code():
         if not email or not isinstance(email, str):
             return jsonify({'message': 'Correo electrónico inválido'}), 400
         
-        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role == 'customer').one_or_none() # Buscamos el usuario
+        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role != 'unverified_customer').one_or_none() # Buscamos el usuario
 
         if user is None:
             return jsonify({'message': 'Usuario no encontrado'}), 404
@@ -427,7 +425,7 @@ def recovery_password_verify_code():
         return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos 6 caracteres.'), 400
     
     try:
-        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role == 'customer').one_or_none() # Buscamos el usuario
+        user = EventsUsers.query.filter(EventsUsers.Email == email, EventsUsers.role != 'unverified_customer').one_or_none() # Buscamos el usuario
 
         if user is None:
             return jsonify({'message': 'Usuario no encontrado'}), 404

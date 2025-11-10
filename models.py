@@ -32,6 +32,24 @@ class EventsUsers(db.Model):
     LastVerificationAttempt = Column(DateTime)
     BsDExchangeRate = Column(Integer)  # tasa de cambio en bolivares al momento del registro o ultima actualizacion
 
+    # Relación one-to-many con la tabla EventsUsers
+    event_access_entries = db.relationship(
+        'EventUserAccess',
+        back_populates='user',
+        cascade='all, delete-orphan',
+        lazy='dynamic'
+    )
+    # Relación many-to-many con la tabla Event a través de EventUserAccess
+    events_with_access = db.relationship(
+        'Event',
+        secondary='event_user_access',
+        primaryjoin='EventsUsers.CustomerID==EventUserAccess.user_id',
+        secondaryjoin='Event.event_id==EventUserAccess.event_id',
+        viewonly=True,
+        lazy='dynamic'
+    )
+
+
 class Active_tokens(db.Model): #tokens de inicio de sesion expirados
     __tablename__='active_tokens'
     id = Column(Integer, primary_key=True)
@@ -95,6 +113,9 @@ class Event(db.Model):
     gross_sales = Column(Integer, default=0) # Ventas brutas del evento
     total_fees = Column(Integer, default=0) # Total de fees cobrados en el evento
     liquidado = Column(Integer, default=0) # Monto liquidado a la productora
+    duration = Column(String(50)) # Duracion del evento
+    clasification = Column(String(50)) # Clasificacion del evento
+    age_restriction = Column(String(50)) # Restriccion de edad
 
     
     # Relación one-to-one con la tabla Venue
@@ -103,6 +124,32 @@ class Event(db.Model):
     tickets = relationship('Ticket', back_populates='event')
     # Relación one-to-many con la tabla Providers
     provider = relationship('Providers', backref='events')
+    # Relación many-to-many con la tabla EventsUsers a través de EventUserAccess
+    user_access_entries = db.relationship(
+        'EventUserAccess',
+        back_populates='event',
+        cascade='all, delete-orphan',
+        lazy='dynamic'
+    )
+    # Relación many-to-many con la tabla EventsUsers a través de EventUserAccess
+    users_with_access = db.relationship(
+        'EventsUsers',
+        secondary='event_user_access',
+        primaryjoin='Event.event_id==EventUserAccess.event_id',
+        secondaryjoin='EventsUsers.CustomerID==EventUserAccess.user_id',
+        viewonly=True,
+        lazy='dynamic'
+    )
+
+class EventUserAccess(db.Model):
+    __tablename__ = 'event_user_access'  # tabla de unión con metadatos
+    # Llave compuesta (user, event) para evitar duplicados
+    user_id = db.Column(db.Integer, db.ForeignKey('events_users.CustomerID'), primary_key=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('events_ft.event_id'), primary_key=True)
+
+    # Relaciones hacia los modelos principales (opcional, útil para queries)
+    user = db.relationship('EventsUsers', back_populates='event_access_entries')
+    event = db.relationship('Event', back_populates='user_access_entries')
 
 # Tabla para las secciones dentro de un lugar (ej: Gradería, VIP)
 class Section(db.Model):

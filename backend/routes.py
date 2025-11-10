@@ -2,7 +2,7 @@ from flask import request, jsonify, Blueprint, make_response, session, current_a
 from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers, EventUserAccess
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -139,6 +139,9 @@ def register():
     email = bleach.clean(request.json.get("email", "").strip().lower(), strip=True)
     birthday = request.json.get("Birthdate")
     role = request.json.get("role")
+    eventAccess = request.json.get("eventAccess", [])  # Lista de IDs de eventos para acceso especial
+
+    print("Event Access Received:", eventAccess)
 
     # Validación de datos de entrada
     if not (firstname and lastname and password and confirm_password and phone and email and birthday and gender and role):
@@ -159,7 +162,7 @@ def register():
     if gender not in ['Male', 'Female']:
         return jsonify(message='Selección de género no válida.'), 400
     
-    if role not in ['admin', 'tiquetero']:
+    if role not in ['admin', 'tiquetero', 'customer', 'passive_customer', 'provider', 'super_admin']:
         return jsonify(message='Selección de rol no válida.'), 400
     
     # Validación de fecha de nacimiento
@@ -204,6 +207,26 @@ def register():
                 Gender=gender
             )
             db.session.add(user)
+            db.session.flush()  # Para obtener el CustomerID antes del commit
+
+            if role == 'provider':
+
+                event_access_ids = [int(event_id) for event_id in eventAccess if isinstance(event_id, int) or (isinstance(event_id, str) and event_id.isdigit())]
+                print("Event Access IDs:", event_access_ids)
+                events = db.session.query(Event).filter(Event.event_id.in_(event_access_ids)).all()
+
+                if not events:
+                    db.session.rollback()
+                    return jsonify(message='No se encontraron eventos válidos para asignar al proveedor.'), 400
+                
+                if len(events) != len(event_access_ids):
+                    db.session.rollback()
+                    return jsonify(message='Algunos eventos proporcionados no son válidos.'), 400
+                
+                for event_id in event_access_ids:
+                    association = EventUserAccess(event_id=event_id, user_id=user.CustomerID)
+                    db.session.add(association)
+                
 
             log_for_new_user = Logs(
                 UserID=user_id,
@@ -242,6 +265,7 @@ def edit_user_info():
     email = bleach.clean(request.json.get("email", "").strip().lower(), strip=True)
     birthday = request.json.get("Birthdate")
     role = request.json.get("role")
+    modify_eventAccess = request.json.get("modifyEventAccess", False)
 
     # Validación de datos de entrada
     if not (firstname and lastname and phone and email and birthday and gender and role):
@@ -256,7 +280,7 @@ def edit_user_info():
     if gender not in ['Male', 'Female']:
         return jsonify(message='Selección de género no válida.'), 400
     
-    if role not in ['admin', 'tiquetero']:
+    if role not in ['admin', 'tiquetero', 'customer', 'passive_customer', 'provider', 'super_admin']:
         return jsonify(message='Selección de rol no válida.'), 400
     
     # Validación de fecha de nacimiento
@@ -309,12 +333,43 @@ def edit_user_info():
             hashed_password = generate_password_hash(password)
             user.Password = hashed_password
 
+        previous_role = user.role
+
+        if previous_role == 'provider' and role != 'provider':
+            # Si el rol cambia de provider a otro, eliminar todas las asociaciones de acceso a eventos
+            db.session.query(EventUserAccess).filter(EventUserAccess.user_id == user.CustomerID).delete()
+            db.session.flush()
 
         user.FirstName = firstname
         user.LastName = lastname
         user.PhoneNumber = phone
         user.birthday = birthday
         user.Gender = gender
+        user.role = role
+
+        if modify_eventAccess and role == 'provider':
+            eventAccess = request.json.get("eventAccess", [])  # Lista de IDs de eventos para acceso especial
+            event_access_ids = [int(event_id) for event_id in eventAccess if isinstance(event_id, int) or (isinstance(event_id, str) and event_id.isdigit())]
+            print("Event Access IDs:", event_access_ids)
+            
+            # Primero, eliminamos las asociaciones existentes
+            db.session.query(EventUserAccess).filter(EventUserAccess.user_id == user.CustomerID).delete()
+            db.session.flush()
+
+            if event_access_ids:
+                events = db.session.query(Event).filter(Event.event_id.in_(event_access_ids)).all()
+
+                if not events:
+                    db.session.rollback()
+                    return jsonify(message='No se encontraron eventos válidos para asignar al proveedor.'), 400
+                
+                if len(events) != len(event_access_ids):
+                    db.session.rollback()
+                    return jsonify(message='Algunos eventos proporcionados no son válidos.'), 400
+                
+                for event_id in event_access_ids:
+                    association = EventUserAccess(event_id=event_id, user_id=user.CustomerID)
+                    db.session.add(association)
 
         db.session.commit()
 
@@ -377,199 +432,6 @@ def block_user():
         logging.error("Reversión de la transacción en la base de datos debido a un error.")
         logging.error(f"Ha ocurrido el siguiente error: {e}")
         return jsonify(message="Ocurrió un error inesperado. Por favor, intenta nuevamente más tarde."), 500
-
-@backend.route('/validate_email_verify_code', methods=['POST'])
-#@limiter.limit("5 per minute")
-@jwt_required()
-def validate_email_verify_code():
-    verify_jwt_in_request()
-    claims = get_jwt()
-    email = claims['username']
-    customerId = claims['id']
-    sender = current_app.config['MAIL_USERNAME'] 
-    
-    try:
-        user = EventsUsers.query.filter(EventsUsers.CustomerID == customerId).one_or_none() #we search the user
-
-        if user.status.lower() == "verified":
-            return jsonify({'message':'This account has already been verified.'}), 409
-        
-        # Concatenate the received code
-        code = ''.join([
-            request.json.get(f"input{i}") or ''
-            for i in range(1, 7)
-        ])
-
-        # Basic length validation
-        if len(code) != 6 or not code.isdigit():
-            return jsonify({'message':'Invalid code, make sure you enter all 6 digits correctly.'}), 400
-
-        email_exists = EventsUsers.query.filter(and_(EventsUsers.Email == email, not_(EventsUsers.status == 'unverified'))).one_or_none()
-        if email_exists:
-            return jsonify({'message':'The email address has already been verified or exists.'}), 409
-        
-        signup_utils.check_validation_attempts(email) #to check the number of validation attempts
-
-        # Register attempt
-        attempt = VerificationAttempt(email=email, attempt_time=datetime.now())
-        db.session.add(attempt)
-
-        # Validate if there is a valid code (not expired)
-        valid_window = datetime.now() - timedelta(minutes=10)
-        valid_codes = VerificationCode.query.filter(
-            and_(
-                VerificationCode.email == email,
-                VerificationCode.attempt_time >= valid_window
-            )               
-        ).all()
-
-        if not valid_codes:
-            db.session.commit()
-            return jsonify({'message':'The code is incorrect or has expired, try again'}), 409
-        
-        for valid_code in valid_codes:
-            if check_password_hash(valid_code.code, code): 
-
-                user.Email = email
-                user.status = "verified"
-
-                #we renew the user token
-                access_token = create_access_token(str(user.CustomerID), additional_claims={'role': 'customer', 'username': user.Email, 'status': user.status.lower(), 'id': user.CustomerID})
-                session['current_token'] = access_token
-                response = make_response(jsonify({'token': access_token, 'status': 'ok', 'redirect': '/'}), 201) 
-                set_access_cookies(response, access_token)
-
-                #create a new token in the Active_tokens table
-                    
-                # OBTENEMOS EL JTI DEL TOKEN RECIÉN CREADO
-                access_jti = get_jti(access_token)
-                
-                # Creamos un nuevo registro en la tabla Active_tokens con el JTI
-                newtoken = Active_tokens(CustomerID=user.CustomerID, jti=access_jti)
-                db.session.add(newtoken)
-
-                # Delete valid codes
-                db.session.delete(valid_code) 
-                db.session.commit()
-
-                # Send the email
-                subject = 'Successful Verification'
-                recipient = email
-
-                message = (
-                    f'Hello,\n\n'
-                    f'Your account has been successfully verified.\n\n'
-                    f'Thanks,\nEquipo de Fiesta Ticket'
-                )
-
-                msg = Message(subject, sender=sender, recipients=[recipient])
-                msg.body = message
-
-                mail.send(msg)
-                return response, 201
-            
-        #if the code is not in the list of valid codes:
-        db.session.commit()
-        logging.warning('The code is incorrect or has expired, try again')
-        return jsonify({'message':'The code is incorrect or has expired, try again'}), 409
-    
-    except signup_utils.TooManyAttemptsError as e:
-        # Captura la excepción personalizada y retorna la respuesta de error adecuada
-        db.session.rollback() # Opcional: si quieres deshacer cualquier cambio pendiente
-        return jsonify({'message': e.message}), e.status_code
-        
-    except Exception as e:
-        logging.error(f"Error in verification code validation: {e}")
-        return jsonify({'message': 'An unexpected error occurred'}), 500
-
-@backend.route('/validate_email_resend_code', methods=['GET'])
-#@limiter.limit("5 per minute")
-@jwt_required()
-def validate_email_resend_code():
-    verify_jwt_in_request()
-    claims = get_jwt()
-    email = claims['username']
-    customerId = claims['id']
-
-    try:
-        # Basic length validation
-        if not email or not isinstance(email, str):
-            return jsonify({'message': 'Invalid email'}), 400
-        
-        user = EventsUsers.query.filter(EventsUsers.CustomerID == customerId).one_or_none() #we search the user
-
-        if user is None:
-            return jsonify({'message': 'User not found'}), 404
-        
-        now = datetime.now(timezone.utc)  # Siempre en UTC
-        
-        if user.LastVerificationAttempt and (now - user.LastVerificationAttempt) < timedelta(minutes=1):
-            return jsonify({'message': 'Please wait a moment before requesting a new code'}), 429
-        
-        datetime_for_new_resend = (now + timedelta(minutes=1)).isoformat() + "Z"
-
-        signup_utils.check_validation_attempts(email)
-        signup_utils.validate_newuser(email, current_app.config, user)
-        return jsonify({'message': 'token sent', 'status': 'ok', 'datetime_for_new_resend': datetime_for_new_resend})
-    
-    except signup_utils.TooManyAttemptsError as e:
-        # Captura la excepción personalizada y retorna la respuesta de error adecuada
-        db.session.rollback() 
-        return jsonify({'message': e.message}), e.status_code
-
-    except Exception as e:
-        logging.error(f"Error in verification code validation: {e}")
-        return jsonify({'message': 'An unexpected error occurred'}), 500
-    
-@backend.route('/validate_email_resend_status', methods=['GET']) #ruta para recopilar timestamp del ultimo send del verification code
-#@limiter.limit("5 per minute")
-#@roles_required(allowed_roles=["admin", "tiquetero"])
-@jwt_required()
-def validate_email_resend_status():
-    verify_jwt_in_request()
-    claims = get_jwt()
-    customerId = claims['id']
-    customerStatus = claims['status']
-
-    print(claims)
-
-    try:
-
-        if customerStatus:
-            if customerStatus.lower() != "unverified":
-                return jsonify({'message':'This account has already been verified.', 'redirect': '/'}), 409
-        
-        user = EventsUsers.query.filter(EventsUsers.CustomerID == customerId).one_or_none() #we search the user
-
-        print(user)
-
-        if user is None:
-            return jsonify({'message': 'User not found'}), 404
-        
-        print(user.LastVerificationAttempt)
-        
-        if not user.LastVerificationAttempt:
-            return jsonify({'message': 'code not found'}), 404
-        
-
-        
-        now = datetime.now(timezone.utc)  # Siempre en UTC
-
-        if user.LastVerificationAttempt and (now - user.LastVerificationAttempt) > timedelta(minutes=1):
-            return jsonify({'message': 'expired'}), 429
-        
-        datetime_for_new_resend = (now + timedelta(minutes=1)).isoformat() + "Z"
-
-        return jsonify({'status': 'ok', 'datetime_for_new_resend': datetime_for_new_resend})
-    
-    except signup_utils.TooManyAttemptsError as e:
-        # Captura la excepción personalizada y retorna la respuesta de error adecuada
-        db.session.rollback() 
-        return jsonify({'message': e.message}), e.status_code
-
-    except Exception as e:
-        logging.error(f"Error in verification code validation: {e}")
-        return jsonify({'message': 'An unexpected error occurred'}), 500
     
 @backend.route('/logout', methods=['GET'])
 @jwt_required()
@@ -3508,19 +3370,21 @@ def resend_ticket():
         db.session.rollback()
         logging.error(f"Error al reenviar ticket: {e}")
         return jsonify({'message': 'Error al reenviar ticket', 'status': 'error'}), 500
+    finally:
+        db.session.close()
     
 @backend.route('/load-users', methods=['GET'])
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_users():
     try:
-
         roles_str = request.args.get('roles', '')
         statuses_str = request.args.get('status', '')
 
-        roles = roles_str.split(',') if roles_str else []
-        statuses = statuses_str.split(',') if statuses_str else []
+        # Normalize and ignore empty items
+        roles = [r for r in roles_str.split(',') if r] if roles_str else []
+        statuses = [s for s in statuses_str.split(',') if s] if statuses_str else []
 
-        # Single query for total users and total admins
+        # Single query for total users and totals por role (mantengo tu lógica original)
         total_users, total_admins, total_tiqueteros, total_customers, total_passive_customers = db.session.query(
             func.count(EventsUsers.CustomerID),
             func.count(func.nullif(EventsUsers.role != 'admin', True)),
@@ -3529,35 +3393,102 @@ def load_users():
             func.count(func.nullif(EventsUsers.role != 'passive_customer', True)),
         ).one()
 
-        # Obtener todos los usuarios
-        users = EventsUsers.query.filter(
-            and_(EventsUsers.role.in_(roles),
-                 EventsUsers.status.in_(statuses),
-            )
-        ).all()
+        # Construir query de usuarios aplicando filtros solo si vienen en query params
+        users_q = EventsUsers.query
+        if roles:
+            users_q = users_q.filter(EventsUsers.role.in_(roles))
+        if statuses:
+            users_q = users_q.filter(EventsUsers.status.in_(statuses))
+
+        users = users_q.all()
 
         users_data = []
 
         if not users:
             return jsonify({
                 'users': users_data,
+                'events': [],  # mantengo la forma de respuesta
                 'status': 'ok'
             }), 200
 
-        # Crear una lista de diccionarios con los datos de los usuarios
-        
+        # Recolectar IDs de usuarios con role provider para hacer consultas en batch (evitar N+1)
+        provider_ids = [u.CustomerID for u in users if (u.role or '').lower() == 'provider']
+
+        # Mapeo user_id -> [Event, ...]
+        assigned_map = {}
+        if provider_ids:
+            # Eventos asignados vía tabla de asociación EventUserAccess
+            rows = (
+                db.session.query(Event, EventUserAccess.user_id)
+                .join(EventUserAccess, Event.event_id == EventUserAccess.event_id)
+                .options(
+                    load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id),
+                    joinedload(Event.venue).load_only(Venue.name)
+                )
+                .filter(EventUserAccess.user_id.in_(provider_ids))
+                .all()
+            )
+            for ev, uid in rows:
+                assigned_map.setdefault(uid, [])
+                assigned_map[uid].append(ev)
+
+            # Además, incluir eventos donde Event.event_provider == provider_id (si aplica)
+            owned_events = (
+                Event.query
+                .options(
+                    load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string, Event.venue_id),
+                    joinedload(Event.venue).load_only(Venue.name)
+                )
+                .filter(Event.event_provider.in_(provider_ids))
+                .all()
+            )
+            for ev in owned_events:
+                uid = ev.event_provider
+                if uid is None:
+                    continue
+                assigned_map.setdefault(uid, [])
+                # evitar duplicados por event_id
+                if not any(existing.event_id == ev.event_id for existing in assigned_map[uid]):
+                    assigned_map[uid].append(ev)
+
+        # Construir users_data y adjuntar eventos asignados si corresponde
         for user in users:
-            users_data.append({
+            user_entry = {
                 'id': user.CustomerID,
-                'firstname': user.FirstName if user.FirstName else '',
-                'lastname': user.LastName if user.LastName else '',
-                'email': user.Email,
-                'phone': user.PhoneNumber,
+                'firstname': user.FirstName or '',
+                'lastname': user.LastName or '',
+                'email': user.Email or '',
+                'phone': user.PhoneNumber or '',
                 'role': user.role,
                 'status': user.status,
                 'date': user.birthday,
                 'gender': user.Gender,
                 'joindate': user.Joindate,
+            }
+
+            if (user.role or '').lower() == 'provider':
+                events_for_user = assigned_map.get(user.CustomerID, [])
+                if events_for_user:
+                    assigned_events = []
+                    for ev in events_for_user:
+                        assigned_events.append(
+                            getattr(ev, 'event_id', None),
+                        )
+                    user_entry['assigned_events'] = assigned_events
+
+            users_data.append(user_entry)
+
+        # Construir lista completa de eventos (para select en UI)
+        events = Event.query.options(
+            load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
+            joinedload(Event.venue).load_only(Venue.name)
+        ).all()
+
+        events_data = []
+        for event in events:
+            events_data.append({
+                'event_id': event.event_id,
+                'name': f"{event.name} - {event.venue.name if event.venue else ''} - {event.date_string or ''} {event.hour_string or ''}",
             })
 
         dashboard_data = {
@@ -3570,15 +3501,15 @@ def load_users():
 
         return jsonify({
             'users': users_data,
+            'events': events_data,
             'status': 'ok',
             'dashboard_data': dashboard_data
         }), 200
 
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error loading dashboard data: {e}")
+        logging.exception(f"Error loading dashboard data: {e}")
         return jsonify({'message': 'Error loading dashboard data', 'status': 'error'}), 500
     finally:
-        db.session.close()  
-
+        db.session.close()
     
