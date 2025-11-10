@@ -924,19 +924,22 @@ def load_successful_sales():
     try:
 
         from_date_str = request.args.get('from_date', '')
+        until_date_str = request.args.get('until_date', '')
         events_str = request.args.get('events', '')
 
-        if not from_date_str:
-            return jsonify({'message': 'Se requiere al menos un filtro (from_date o status)', 'status': 'error'}), 400
-
-        # Parse from_date as a datetime object if provided
         from_date = None
-
+        until_date = None
         
         if from_date_str:
             from_date_str = from_date_str.split('T')[0]  # Extraer solo la parte de la fecha
             try:
                 from_date = datetime.strptime(from_date_str, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'message': 'Formato de fecha inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
+        if until_date_str:
+            until_date_str = until_date_str.split('T')[0]  # Extraer solo la parte de la fecha
+            try:
+                until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
             except ValueError:
                 return jsonify({'message': 'Formato de fecha inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
 
@@ -953,6 +956,9 @@ def load_successful_sales():
         if from_date:
             from_date = from_date.date()  # asegúrate de tener un date
             filters.append(Sales.creation_date >= from_date)
+        if until_date_str:
+            until_date = until_date.date()  # asegúrate de tener un date
+            filters.append(Sales.creation_date <= until_date)
         if events and any(events):
             filters.append(Sales.event.in_(events))
 
@@ -976,6 +982,7 @@ def load_successful_sales():
                 'event_hour': sale.event_rel.hour_string if sale.event_rel else '',
                 'event_id': sale.event_rel.event_id if sale.event_rel else '',
                 'price': round((sale.price - sale.discount + sale.fee )/100, 2),
+                'fee': round(sale.fee/100, 2),
                 'saleLocator': sale.saleLocator,
                 'saleLink': sale.saleLink,
                 'email': sale.customer.Email if sale.customer else '',
@@ -1468,12 +1475,9 @@ def view_liquidations():
             "event_place": event_obj.venue.name if event_obj.venue else '',
             "total_liquidated": round((event_obj.liquidado if event_obj.liquidado else 0)/100, 2),
             "total_sales": event_obj.total_sales,
-            "gross_sales": round((event_obj.gross_sales if event_obj.liquidado else 0)/100, 2),
-            "total_fees": round((event_obj.total_fees if event_obj.liquidado else 0)/100, 2)
+            "gross_sales": round((event_obj.gross_sales if event_obj.gross_sales else 0)/100, 2),
+            "total_fees": round((event_obj.total_fees if event_obj.total_fees else 0)/100, 2)
         }
-
-        print(event_info)
-
         return jsonify({"event": event_info, "status": "ok"}), 200
     except Exception as e:
         logging.error(f"Error al procesar liquidación: {e}")
