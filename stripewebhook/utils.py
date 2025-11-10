@@ -326,6 +326,12 @@ def handle_checkout_completed(data, config):
                 'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
             }
             utils_eventos.sendnotification_for_CompletedPaymentStatus(config, db, mail, customer, Tickets, sale_data)
+
+            # Actualizar métricas del evento
+            event.total_sales = (event.total_sales or 0) + 1
+            event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
+            event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
+
         db.session.commit()
 
         return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "ok"}), 200

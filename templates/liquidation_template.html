@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="es">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Liquidación {{ liquidation.LiquidationID }}</title>
+  <style>
+    :root {
+      --primary: #065f46;
+      --accent: #d946ef;
+      --muted: #6b7280;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e6e9ee;
+      --shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+      --radius: 8px;
+    }
+
+    /* Evitar height:100% que puede interferir con paginación */
+    html, body {
+      /* height: 100% removed */
+      margin: 0; /* confiamos en @page para márgenes */
+      background: var(--bg);
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      color: #1f2937;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body, section, div, table {
+      break-inside: auto;
+    }
+
+    /* Header: cambiar de flex a layout que rompa mejor en WeasyPrint */
+    .letterhead {
+      /* display:flex;  <-- evitar flex en header por problemas de paginación en algunos engines */
+      overflow: visible;
+      background: linear-gradient(90deg, rgba(6, 95, 70, 0.04), rgba(217, 70, 239, 0.02));
+      padding: 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+      /* Usamos layout clásico: logo float + texto al lado */
+      position: relative;
+    }
+
+    .logo {
+      width: 92px;
+      height: 92px;
+      float: left;
+      margin-right: 12px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(6, 95, 70, 0.12);
+      flex-shrink: 0;
+    }
+
+    .company {
+      overflow: visible;
+      margin-left: 110px; /* deja espacio para el logo flotante */
+    }
+
+    .company h1 { margin: 0; font-size: 18px; color: var(--primary); }
+    .company .meta { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+
+    .docinfo {
+      text-align: right;
+      min-width: 180px;
+      float: right;
+      margin-top: -80px; /* ajustar para alinear arriba; cambiar según sea necesario */
+    }
+
+    .docinfo .title { font-weight: 700; color: var(--primary); font-size: 14px; }
+    .docinfo .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+    .resaltar { color: var(--accent); font-weight: 700; }
+
+    h1,h2,h3 { color: var(--primary); margin: 12px 0 8px 0; }
+    h1 { font-size: 20px }
+    h2 { font-size: 16px }
+    p.small { font-size: 12px; color: var(--muted); margin:4px 0; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+      page-break-inside: auto; /* permitir ruptura */
+      overflow: visible;
+      display: block;
+    }
+
+    table { width:100%; border-collapse: collapse; margin-bottom:8px; font-size:13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #f1f5f9; text-align:left; vertical-align: middle; }
+    thead th { background: linear-gradient(180deg, #fbfdff, #f6fbf9); color:#0f172a; font-weight:600; border-bottom:2px solid var(--border); }
+    tr:nth-child(even) td { background: #ffffff; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .right { text-align: right; }
+    .section-seats { font-size:12px; color:#374151; }
+
+    .totals { margin-top: 8px; display:flex; justify-content:flex-end; gap:12px; }
+    .totals .box { background: #f8fafc; border: 1px solid var(--border); padding: 10px 14px; border-radius:6px; min-width:220px; text-align:left; }
+    .totals .box .label { color: var(--muted); font-size:12px; }
+    .totals .box .value { font-weight:700; color:var(--primary); font-size:15px; text-align:right; display:block; }
+
+    .small-note { font-size:11px; color:var(--muted); margin-top:6px; }
+
+    .page-break { page-break-after: always; break-after: page; margin-top: 18px; }
+
+    /* Mantén la definición @page en un solo sitio (plantilla) */
+    @page { size: letter; margin: 20mm; }
+
+    @media print {
+      body { background: white }
+      .letterhead { box-shadow: none; border: 0; padding: 0; margin-bottom: 12px }
+    }
+
+    table, tr, td, th { page-break-inside: auto !important; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+  </style>
+</head>
+
+<body>
+  <header class="letterhead">
+    <div class="logo">FT</div>
+    <div class="company">
+      <h1>La Matunga, C.A.</h1>
+      <div class="meta">
+        J-500318928<br />
+        Caracas, Venezuela
+      </div>
+    </div>
+    <div class="docinfo">
+      <div class="title">Liquidación ID: {{ liquidation.LiquidationID }}</div>
+      <div class="sub">Fecha: {{ event.date_string }}<br />Evento: {{ event.name }}</div>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>Resumen general</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Concepto</th>
+          <th class="right">Valor</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="resaltar">
+          <td>Subtotal</td>
+          <td class="right">{{ totals.totalFinal | currency }}</td>
+        </tr>
+        {% if discounts %}
+        {% for discount in discounts %}
+        <tr>
+          <td>{{ discount.name }}</td>
+          <td class="right">{{ discount.price | currency }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+        <tr class="resaltar">
+          <td>Total descuentos</td>
+          <td class="right">{{ totals.totalDescuentos | currency }}</td>
+        </tr>
+        {% if additionalCharges %}
+        {% for additionalCharge in additionalCharges %}
+        <tr>
+          <td>{{ additionalCharge.name }}</td>
+          <td class="right">{{ additionalCharge.price | currency }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+        <tr class="resaltar">
+          <td>Total cargos adicionales</td>
+          <td class="right">{{ totals.totalCargos | currency }}</td>
+        </tr>
+        <tr>
+          <td>Método de pago</td>
+          <td class="right">{{ payment.method }} (Ref: {{ payment.reference }})</td>
+        </tr>
+      </tbody>
+    </table>
+    <div>
+      <div class="totals">
+        <div class="box">
+          <div class="label">Total a recibir</div>
+          <div class="value">{{ totals.totalFinal | currency }}</div>
+        </div>
+      </div>
+      {% if payment.currency == 'bolivares' %}
+      <div class="totals">
+        <div class="box">
+          <div class="label">Total a recibir en Bolívares</div>
+          <div class="value">{{ payment.amountBolivares | currency_Bsd }}</div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+
+  </section>
+
+  <div class="page-break"></div>
+
+  <section class="card">
+    <h2>Detalle de ventas</h2>
+    {% if sales %}
+    {% for sale in sales %}
+    <div style="margin-bottom:12px;">
+      <h3 style="margin:6px 0">Venta: {{ sale.sale_id }}</h3>
+      <p class="small">Fecha: {{ sale.creation_date }} &nbsp;—&nbsp; Total recibido: <strong>{{ sale.price |
+          currency_cents_to_dollars }}</strong></p>
+
+      {% if sale.tickets and sale.tickets|length > 0 %}
+      <table>
+        <thead>
+          <tr>
+            <th>Asiento</th>
+            <th class="right">Precio</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in sale.tickets %}
+          <tr>
+            <td>{{ t.seat.section.name ~ ' ' ~ t.seat.row ~ (t.seat.number|string) }}</td>
+            <td class="right">{{ t.price | currency_cents_to_dollars }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="small">No hay asientos asociados a esta venta.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="small">No hay ventas para mostrar.</p>
+    {% endif %}
+  </section>
+
+  <div class="page-break"></div>
+
+  <section class="card">
+    <h2>Boletos vendidos por sección</h2>
+    {% if sections %}
+    <table>
+      <thead>
+        <tr>
+          <th>Sección</th>
+          <th>Asientos</th>
+          <th class="right">Precio por asiento</th>
+          <th class="right">Total sección</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in sections %}
+        <tr>
+          <td>{{ g.section }}</td>
+          <td class="section-seats">
+        {% for s in g.seats %}
+          {{ s.row ~ '' ~ (s.number|string) }}{% if not loop.last %}, {% endif %}
+        {% endfor %}
+          </td>
+          <td class="right">
+        {% if not g.priceVaries and g.seats and g.seats|length > 0 %}
+          {{ g.seats[0].price | currency }}
+        {% else %}
+          Varían
+        {% endif %}
+          </td>
+          <td class="right">{{ g.total | currency }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small">No se registran boletos vendidos.</p>
+    {% endif %}
+  </section>
+
+  {% if comments %}
+  <section class="card">
+    <h2>Comentarios</h2>
+    <p class="small">{{ comments }}</p>
+  </section>
+  {% endif %}
+</body>
+
+</html>

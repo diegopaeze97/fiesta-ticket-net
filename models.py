@@ -32,6 +32,24 @@ class EventsUsers(db.Model):
     LastVerificationAttempt = Column(DateTime)
     BsDExchangeRate = Column(Integer)  # tasa de cambio en bolivares al momento del registro o ultima actualizacion
 
+    # Relación one-to-many con la tabla EventsUsers
+    event_access_entries = db.relationship(
+        'EventUserAccess',
+        back_populates='user',
+        cascade='all, delete-orphan',
+        lazy='dynamic'
+    )
+    # Relación many-to-many con la tabla Event a través de EventUserAccess
+    events_with_access = db.relationship(
+        'Event',
+        secondary='event_user_access',
+        primaryjoin='EventsUsers.CustomerID==EventUserAccess.user_id',
+        secondaryjoin='Event.event_id==EventUserAccess.event_id',
+        viewonly=True,
+        lazy='dynamic'
+    )
+
+
 class Active_tokens(db.Model): #tokens de inicio de sesion expirados
     __tablename__='active_tokens'
     id = Column(Integer, primary_key=True)
@@ -91,6 +109,14 @@ class Event(db.Model):
     event_id_provider = Column(Integer) # ID del evento en el proveedor externo (Tickera) #solo si aplica (API)
     event_provider = Column(Integer, ForeignKey('providers.ProviderID'), nullable=True) # Proveedor externo (Tickera u otro)
     Fee = Column(Integer) # Tarifa del evento
+    total_sales = Column(Integer, default=0) # Ventas netas del evento
+    gross_sales = Column(Integer, default=0) # Ventas brutas del evento
+    total_fees = Column(Integer, default=0) # Total de fees cobrados en el evento
+    liquidado = Column(Integer, default=0) # Monto liquidado a la productora
+    duration = Column(String(50)) # Duracion del evento
+    clasification = Column(String(50)) # Clasificacion del evento
+    age_restriction = Column(String(50)) # Restriccion de edad
+
     
     # Relación one-to-one con la tabla Venue
     venue = relationship('Venue', back_populates='events')
@@ -98,6 +124,32 @@ class Event(db.Model):
     tickets = relationship('Ticket', back_populates='event')
     # Relación one-to-many con la tabla Providers
     provider = relationship('Providers', backref='events')
+    # Relación many-to-many con la tabla EventsUsers a través de EventUserAccess
+    user_access_entries = db.relationship(
+        'EventUserAccess',
+        back_populates='event',
+        cascade='all, delete-orphan',
+        lazy='dynamic'
+    )
+    # Relación many-to-many con la tabla EventsUsers a través de EventUserAccess
+    users_with_access = db.relationship(
+        'EventsUsers',
+        secondary='event_user_access',
+        primaryjoin='Event.event_id==EventUserAccess.event_id',
+        secondaryjoin='EventsUsers.CustomerID==EventUserAccess.user_id',
+        viewonly=True,
+        lazy='dynamic'
+    )
+
+class EventUserAccess(db.Model):
+    __tablename__ = 'event_user_access'  # tabla de unión con metadatos
+    # Llave compuesta (user, event) para evitar duplicados
+    user_id = db.Column(db.Integer, db.ForeignKey('events_users.CustomerID'), primary_key=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('events_ft.event_id'), primary_key=True)
+
+    # Relaciones hacia los modelos principales (opcional, útil para queries)
+    user = db.relationship('EventsUsers', back_populates='event_access_entries')
+    event = db.relationship('Event', back_populates='user_access_entries')
 
 # Tabla para las secciones dentro de un lugar (ej: Gradería, VIP)
 class Section(db.Model):
@@ -210,6 +262,7 @@ class Sales(db.Model):
     event_rel = relationship('Event', backref='sales')
     tickets = relationship('Ticket', back_populates='sale')
     liquidation = relationship('Liquidations', back_populates='sales')
+    payment = relationship('Payments', back_populates='sale', uselist=False)
 
 
 class Logs(db.Model):
@@ -247,7 +300,7 @@ class Payments(db.Model):
     ApprovalDate = Column(Date)
 
     # Relación con la tabla Sales
-    sale = relationship('Sales', backref='payments')
+    sale = relationship('Sales', back_populates='payment')
     approvedby = relationship('EventsUsers', foreign_keys=[ApprovedBy], backref='approved_payments')
     createdby = relationship('EventsUsers', foreign_keys=[CreatedBy], backref='created_payments')
 
@@ -259,6 +312,7 @@ class Providers(db.Model):
     TickeraUsername = Column(String, nullable=True)
     ProviderName = Column(String, nullable=True)
     TickeraAuthToken = Column(String, nullable=True)
+    ProviderEmail = Column(String, nullable=True)
 
 class Liquidations(db.Model):
     __tablename__ = 'liquidations'
@@ -273,8 +327,8 @@ class Liquidations(db.Model):
     Details = Column(String)
     PaymentMethod = Column(String)  # 'bank_transfer', 'paypal', etc.
     Reference = Column(String)  # referencia de pago
-    Discount = Column(Integer, default=0)  # descuento
-    AdditionalFees = Column(Integer, default=0)  # cargos adicionales
+    Discount = Column(String)  # descuento
+    AdditionalFees = Column(String)  # cargos adicionales
     Comments = Column(String)  # comentarios
     PdfLink = Column(String)  # enlace al comprobante en PDF
     # Relación con la tabla EventsUsers
