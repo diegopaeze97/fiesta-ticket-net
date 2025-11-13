@@ -213,24 +213,26 @@ def load_liquidations():
         for sale in sales:
             sale_tickets = sale.tickets or []
             if not sale.liquidado:
+                tickets_list = [
+                    {
+                    'ticket_id': getattr(ticket, 'ticket_id', None),
+                    'sale_id': getattr(sale, 'sale_id', None),
+                    'price': round((getattr(ticket, 'price', 0) or 0) / 100, 2),
+                    'section': ticket.seat.section.name if (ticket.seat and getattr(ticket.seat, 'section', None)) else '',
+                    'row': ticket.seat.row if ticket.seat else '',
+                    'number': ticket.seat.number if ticket.seat else '',
+                    'EmissionDate': ticket.emission_date.isoformat() if getattr(ticket, 'emission_date', None) else ''
+                    }
+                    for ticket in sale_tickets
+                ]
+
                 sales_data.append({
                     'sale_id': getattr(sale, 'sale_id', None),
                     'price': round(((sale.price or 0) - (sale.discount or 0) + (sale.fee or 0)) / 100, 2),
                     'saleLink': getattr(sale, 'saleLink', ''),
                     'saleDate': sale.creation_date.isoformat() if getattr(sale, 'creation_date', None) else '',
                     'liquidado': bool(sale.liquidado),
-                    'tickets': [
-                        {
-                            'ticket_id': getattr(ticket, 'ticket_id', None),
-                            'sale_id': getattr(sale, 'sale_id', None),
-                            'price': round((getattr(ticket, 'price', 0) or 0) / 100, 2),
-                            'section': ticket.seat.section.name if (ticket.seat and getattr(ticket.seat, 'section', None)) else '',
-                            'row': ticket.seat.row if ticket.seat else '',
-                            'number': ticket.seat.number if ticket.seat else '',
-                            'dateofPurchase': ticket.emission_date.isoformat() if getattr(ticket, 'emission_date', None) else ''
-                        }
-                        for ticket in sale_tickets
-                    ],
+                    'tickets': tickets_list,
                     'paymentsMethod': sale.payment.PaymentMethod if getattr(sale, 'payment', None) else ''
                 })
             else:
@@ -248,40 +250,42 @@ def load_liquidations():
                             except Exception:
                                 continue
 
-                    additional_fees_list = []
-                    if getattr(liq, 'AdditionalFees', None):
-                        for item in liq.AdditionalFees.split('||'):
-                            try:
-                                name, price = item.split(',', 1)
-                                additional_fees_list.append({'name': name, 'price': int(price)})
-                            except Exception:
-                                continue
+                        additional_fees_list = []
+                        if getattr(liq, 'AdditionalFees', None):
+                            for item in liq.AdditionalFees.split('||'):
+                                try:
+                                    name, price = item.split(',', 1)
+                                    additional_fees_list.append({'name': name, 'price': int(price)})
+                                except Exception:
+                                    continue
 
-                    liquidations_map[lid] = {
-                        'liquidation_id': lid,
-                        'event_id': getattr(liq, 'EventID', event_id),
-                        'amount_usd': round((getattr(liq, 'Amount', 0) or 0) / 100, 2),
-                        'amount_bsd': round((getattr(liq, 'AmountBS', 0) or 0) / 100, 2),
-                        'liquidation_date': liq.LiquidationDate.isoformat() if getattr(liq, 'LiquidationDate', None) else '',
-                        'created_by': getattr(liq, 'CreatedBy', ''),
-                        'comments': getattr(liq, 'Comments', ''),
-                        'payment_method': getattr(liq, 'PaymentMethod', ''),
-                        'reference': getattr(liq, 'Reference', ''),
-                        'discounts': discounts_list,
-                        'additional_charges': additional_fees_list,
-                        'tickets': []
-                    }
+                            liquidations_map[lid] = {
+                            'liquidation_id': lid,
+                            'event_id': getattr(liq, 'EventID', event_id),
+                            'amount_usd': round((getattr(liq, 'Amount', 0) or 0) / 100, 2),
+                            'amount_bsd': round((getattr(liq, 'AmountBS', 0) or 0) / 100, 2),
+                            'liquidation_date': liq.LiquidationDate.isoformat() if getattr(liq, 'LiquidationDate', None) else '',
+                            'created_by': getattr(liq, 'CreatedBy', ''),
+                            'comments': getattr(liq, 'Comments', ''),
+                            'payment_method': getattr(liq, 'PaymentMethod', ''),
+                            'reference': getattr(liq, 'Reference', ''),
+                            'discounts': discounts_list,
+                            'additional_charges': additional_fees_list,
+                            'tickets': []
+                            }
 
-                for ticket in sale_tickets:
-                    liquidations_map[lid]['tickets'].append({
-                        'ticket_id': getattr(ticket, 'ticket_id', None),
-                        'sale_id': getattr(sale, 'sale_id', None),
-                        'price': round((getattr(ticket, 'price', 0) or 0) / 100, 2),
-                        'section': ticket.seat.section.name if (ticket.seat and getattr(ticket.seat, 'section', None)) else '',
-                        'row': ticket.seat.row if ticket.seat else '',
-                        'number': ticket.seat.number if ticket.seat else '',
-                        'dateofPurchase': ticket.emission_date.isoformat() if getattr(ticket, 'emission_date', None) else ''
-                    })
+                        for ticket in sale_tickets:
+                            ticket_dict = {
+                            'ticket_id': getattr(ticket, 'ticket_id', None),
+                            'sale_id': getattr(sale, 'sale_id', None),
+                            'price': round((getattr(ticket, 'price', 0) or 0) / 100, 2),
+                            'section': ticket.seat.section.name if (ticket.seat and getattr(ticket.seat, 'section', None)) else '',
+                            'row': ticket.seat.row if ticket.seat else '',
+                            'number': ticket.seat.number if ticket.seat else '',
+                            'EmissionDate': ticket.emission_date.isoformat() if getattr(ticket, 'emission_date', None) else ''
+                            }
+                            liquidations_map[lid]['tickets'].append(ticket_dict)
+
 
         liquidations_data = sorted(liquidations_map.values(), key=lambda x: x.get('liquidation_date', ''), reverse=True)
         sales_data = sorted(sales_data, key=lambda x: x.get('saleDate', ''), reverse=True)
@@ -308,8 +312,6 @@ def load_liquidations():
             "total_tickets_sold": total_tickets_sold,
             "total_tickets_liquidated": total_tickets_liquidated
         }
-
-        print( "event_info:", event_info )
 
         return jsonify({"sales": sales_data, "liquidations": liquidations_data, "status": "ok", "event": event_info}), 200
     except Exception:
