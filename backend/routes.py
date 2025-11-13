@@ -7,7 +7,7 @@ from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
 from sqlalchemy.orm import joinedload, load_only
-from sqlalchemy import and_, or_, func, not_
+from sqlalchemy import and_, or_, func, case
 import os
 import bleach
 import pandas as pd
@@ -25,26 +25,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import backend.utils as utils_backend
 
+
 backend = Blueprint('backend', __name__)
 
 UPLOAD_FOLDER = "uploads/seats"
-ALLOWED_EXTENSIONS = {'csv', 'xls', 'xlsx'}
 
 # Asegura que el folder exista
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-eventos = Blueprint('eventos', __name__)
-
-ALLOWED_EXTENSIONS = {'csv', 'xls', 'xlsx'}
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @backend.route('/login', methods=['POST'])
 def login():
@@ -212,7 +199,6 @@ def register():
             if role == 'provider':
 
                 event_access_ids = [int(event_id) for event_id in eventAccess if isinstance(event_id, int) or (isinstance(event_id, str) and event_id.isdigit())]
-                print("Event Access IDs:", event_access_ids)
                 events = db.session.query(Event).filter(Event.event_id.in_(event_access_ids)).all()
 
                 if not events:
@@ -500,83 +486,131 @@ def load_dashboard():
         logging.error(f"Error loading dashboard data: {e}")
         return jsonify({'message': 'Error loading dashboard data', 'status': 'error'}), 500
     
-@backend.route('/new-event', methods=['POST']) #ruta para crear nuevos eventos
+
+
+ALLOWED_SEAT_EXTENSIONS = {'.csv', '.xls', '.xlsx'}
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+def allowed_file(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in ALLOWED_SEAT_EXTENSIONS
+
+def allowed_image(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in ALLOWED_IMAGE_EXTENSIONS
+
+@backend.route('/new-event', methods=['POST'])  # ruta para crear nuevos eventos
 @roles_required(allowed_roles=["admin"])
 def new_event():
     try:
         user_id = get_jwt().get("id")
 
-        # 1. Extraer datos del formulario
+        # EXTRACCION DE CAMPOS
         event_name = request.form.get('event')
         place = request.form.get('place')
         date = request.form.get('date')
         hour = request.form.get('hour')
         upload_method = request.form.get('uploadMethod')
         seat_file = request.files.get('seatFile')
-        event_provider = request.form.get('externalProvider', '')
+        event_provider = request.form.get('externalProvider', None)
+        event_id_provider = request.form.get('externalEvent', None)
 
-        if not all([event_name, place, date, hour, event_provider]):
+        description = request.form.get('description', '')
+        Type = request.form.get('Type', 'Espectaculo')
+        active = request.form.get('active', '1') in ['1', 'true', 'True']
+        Fee = request.form.get('Fee', None)
+        duration = request.form.get('duration', None)
+        clasification = request.form.get('clasification', None)
+        age_restriction = request.form.get('age_restriction', None)
+
+        main_image = request.files.get('mainImage')
+        banner_image = request.files.get('bannerImage')
+        banner_device = request.files.get('bannerImageDevice')
+
+        # Validaciones básicas
+        if not all([event_name, place, date, hour]):
             return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
-        
-        # 1. Buscar o crear el Venue
+
+        # Buscar o crear Venue
         venue = Venue.query.filter_by(name=place).first()
         if not venue:
             venue = Venue(name=place, address="No especificada", city="No especificada")
             db.session.add(venue)
-            db.session.flush()  # para obtener venue_id antes de commit
-        
-        # 2. Crear el Event
+            db.session.flush()
+
+        # Guardar imágenes si hay
+        main_path = None
+        banner_path = None
+        banner_dev_path = None
+
+        S3_BUCKET = "imagenes-fiestatravel"
+        if main_image and allowed_image(main_image.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{main_image.filename}"
+            data = main_image.read()
+            content_type = main_image.content_type
+            main_path = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+        if banner_image and allowed_image(banner_image.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{banner_image.filename}"
+            data = banner_image.read()
+            content_type = banner_image.content_type
+            banner_path = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+        if banner_device and allowed_image(banner_device.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{banner_device.filename}"
+            data = banner_device.read()
+            content_type = banner_device.content_type
+            banner_dev_path = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+
+        # Crear Event
         event_date = datetime.strptime(date, "%Y-%m-%d").date()
         event = Event(
             name=event_name,
+            description=description,
             date=event_date,
             date_string=date,
             hour_string=hour,
             venue_id=venue.venue_id,
-            created_by=user_id,
-            Type='Espectaculo',
-            event_provider=event_provider
-            
+            Type=Type,
+            mainImage=main_path,
+            bannerImage=banner_path,
+            bannerImageDevice=banner_dev_path,
+            active=active,
+            event_id_provider=int(event_id_provider) if event_id_provider else None,
+            event_provider=int(event_provider) if event_provider else None,
+            Fee=int(Fee) if Fee else None,
+            duration=duration,
+            clasification=clasification,
+            age_restriction=age_restriction,
+            created_by=user_id
         )
         db.session.add(event)
-        db.session.flush()  # para obtener event_id
+        db.session.flush()  # obtener event_id
 
+        tickets_to_add = []
+
+        # Procesamiento de asientos (archivo)
         if upload_method == 'file':
-
             if not seat_file:
                 return jsonify({'message': 'Falta el archivo', 'status': 'error'}), 400
-
             if not allowed_file(seat_file.filename):
                 return jsonify({'message': 'Formato de archivo no permitido', 'status': 'error'}), 400
 
-            # 3. Leer el archivo con pandas (soporta csv y excel)
-            if seat_file.filename.endswith('.csv'):
+            if seat_file.filename.lower().endswith('.csv'):
                 df = pd.read_csv(seat_file)
             else:
                 df = pd.read_excel(seat_file)
 
-            # Normalizamos nombres de columnas
             df.columns = df.columns.str.strip().str.lower()
-
-            # Validar que tenga las columnas correctas
             required_cols = {'asiento', 'seccion', 'precio'}
             if not required_cols.issubset(df.columns):
                 return jsonify({'message': 'El archivo no tiene las columnas requeridas', 'status': 'error'}), 400
 
-
-
-            # 4. Procesar cada fila del archivo de forma eficiente
-            # Cache de secciones y asientos para evitar queries repetidas
             section_cache = {}
             seat_cache = {}
-            tickets_to_add = []
-
             for _, row in df.iterrows():
                 asiento = str(row['asiento']).strip()
                 seccion = str(row['seccion']).strip()
-                precio = int(row['precio'])*100
+                precio = int(row['precio']) * 100
 
-                # Buscar o crear la sección (cache)
                 section_key = (venue.venue_id, seccion)
                 if section_key not in section_cache:
                     section = Section.query.filter_by(venue_id=venue.venue_id, name=seccion).first()
@@ -588,7 +622,6 @@ def new_event():
                 else:
                     section = section_cache[section_key]
 
-                # Dividir el asiento en fila y número
                 row_label = ''.join([ch for ch in asiento if ch.isalpha()])
                 number = ''.join([ch for ch in asiento if ch.isdigit()])
 
@@ -602,7 +635,7 @@ def new_event():
                     seat_cache[seat_key] = seat
                 else:
                     seat = seat_cache[seat_key]
-                                    # Crear ticket (solo agregamos a la lista, no al session aún)
+
                 ticket = Ticket(
                     event_id=event.event_id,
                     ticket_id_provider=None,
@@ -614,60 +647,40 @@ def new_event():
                 tickets_to_add.append(ticket)
 
         elif upload_method == 'from api':
-            event_id = request.form.get('externalEvent', '')
+            event_id = event_id_provider
             tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
             tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
 
-            if not all([event_id, tickera_id, tickera_api_key]):
-                return jsonify({"message": "Faltan parámetros"}), 400
-            
-            event.event_id_provider = event_id
-            
-            if event is None or not event.active:
-                print("Evento no encontrado o inactivo")
-                return jsonify({"message": "Evento no encontrado"}), 404
-            
-            url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-tickets"
-            query = str(event.event_id_provider).strip()  # normalizar / sanitizar
+            if not all([event_id]):
+                return jsonify({"message": "Faltan parámetros: externalEvent"}, 400)
 
-            # Construir sesión con reintentos para errores transitorios
+            event.event_id_provider = int(event_id) if event_id else None
+
+            # Llamada a servicio externo con retry
+            url = f"{current_app.config.get('FIESTATRAVEL_API_URL')}/eventos_api/load-tickets"
+            query = str(event.event_id_provider).strip()
+
             session = requests.Session()
-            retries = Retry(
-                total=3,
-                backoff_factor=0.5,
-                status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=frozenset(['GET', 'POST'])
-            )
+            retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=frozenset(['GET', 'POST']))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount("https://", adapter)
             session.mount("http://", adapter)
-
-            # Enviar credenciales en headers (evita que queden en logs/urls)
             headers = {
                 "Accept": "application/json",
                 "User-Agent": "FiestaTickets/1.0",
                 "X-Tickera-Id": tickera_id,
                 "X-Tickera-Api-Key": tickera_api_key
             }
-
             params = {"query": query}
-
-            # Verificación de certificado configurable (True por defecto)
             verify = current_app.config.get("REQUESTS_VERIFY", True)
 
             try:
-                # timeouts: (connect, read)
-                response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
-
-                # Validaciones básicas de seguridad / integridad
-                content_type = response.headers.get("Content-Type", "")
-                if "application/json" not in content_type:
-                    logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
-                    response.raise_for_status()
-
+                resp = session.get(url, params=params, headers=headers, timeout=(5, 60), verify=verify)
+                resp.raise_for_status()
+                data = resp.json()
+                tickets = data.get("tickets", [])
             except requests.exceptions.RequestException:
-                logging.exception("Error al comunicarse con Tickera")
-                # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
+                logging.exception("Error al comunicarse con proveedor externo")
                 raise
             finally:
                 try:
@@ -675,16 +688,8 @@ def new_event():
                 except Exception:
                     pass
 
-            # Hacer el request
-            response = requests.get(url, params=params, timeout=100)
-
-            tickets = response.json().get("tickets", [])
-
-
-            #aca se crean los tickets como se hace con el archivo
             section_cache = {}
             seat_cache = {}
-            tickets_to_add = [] # Lista para almacenar los tickets a insertar
             for ticket_data in tickets:
                 asiento = str(ticket_data.get('seat', '')).strip()
                 seccion = str(ticket_data.get('section', '')).strip()
@@ -692,9 +697,8 @@ def new_event():
                 ticket_id_fromprovider = int(ticket_data.get('ticket_id_provider', 0))
 
                 if not all([asiento, seccion, precio, ticket_id_fromprovider]):
-                    return jsonify({'message': 'Datos incompletos en el ticket desde la API', 'status': 'error'}), 400
+                    return jsonify({'message': 'Datos incompletos en tickets desde API', 'status': 'error'}), 400
 
-                # Buscar o crear la sección (cache)
                 section_key = (venue.venue_id, seccion)
                 if section_key not in section_cache:
                     section = Section.query.filter_by(venue_id=venue.venue_id, name=seccion).first()
@@ -706,7 +710,6 @@ def new_event():
                 else:
                     section = section_cache[section_key]
 
-                # Dividir el asiento en fila y número
                 row_label = ''.join([ch for ch in asiento if ch.isalpha()])
                 number = ''.join([ch for ch in asiento if ch.isdigit()])
 
@@ -721,7 +724,6 @@ def new_event():
                 else:
                     seat = seat_cache[seat_key]
 
-                # Crear ticket (solo agregamos a la lista, no al session aún)
                 ticket = Ticket(
                     event_id=event.event_id,
                     ticket_id_provider=ticket_id_fromprovider,
@@ -731,94 +733,256 @@ def new_event():
                     created_by=user_id
                 )
                 tickets_to_add.append(ticket)
-                    
+        # Insert all tickets
+        if tickets_to_add:
+            db.session.add_all(tickets_to_add)
 
-            else:
-                return jsonify({
-                    "status": "error",
-                    "code": response.status_code,
-                    "message": response.json().get("message", "Error desconocido")
-                }), response.status_code
-
-
-
-        # Bulk insert de tickets
-        db.session.add_all(tickets_to_add)
         db.session.commit()
-
         return jsonify({'message': 'Evento y tickets creados exitosamente', 'status': 'ok'}), 200
 
     except requests.exceptions.RequestException as e:
         db.session.rollback()
-        return jsonify({"message": f"Error en el request: {str(e)}"}), 500
-
+        return jsonify({"message": f"Error en el request externo: {str(e)}"}), 500
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error al crear evento: {e}")
-        return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
-    
-@backend.route('/load-events', methods=['GET']) #ver eventos creados
+        logging.exception("Error al crear evento")
+        return jsonify({'message': 'Error al crear evento', 'status': 'error', 'detail': str(e)}), 500
+
+
+@backend.route('/update-event', methods=['POST'])  # ruta para editar eventos existentes
+@roles_required(allowed_roles=["admin"])
+def update_event():
+    """
+    Actualiza un evento existente. Si se entrega un nuevo seatFile o uploadMethod distinto,
+    se reemplazan los tickets asociados al evento (se eliminan los previos y se insertan los nuevos).
+    """
+    try:
+        event_id = request.args.get('eventId')
+        event = Event.query.filter_by(event_id=int(event_id)).first()
+        if not event:
+            return jsonify({'message': 'Evento no encontrado', 'status': 'error'}), 404
+
+        # Extracción de campos (mismos nombres que new-event)
+        event_name = request.form.get('event')
+        place = request.form.get('place')
+        date = request.form.get('date')
+        hour = request.form.get('hour')
+        event_provider = request.form.get('externalProvider', None)
+        event_id_provider = request.form.get('externalEvent', None)
+
+        description = request.form.get('description', event.description)
+        Type = request.form.get('Type', event.Type or 'Espectaculo')
+        active = request.form.get('active', '1') in ['1', 'true', 'True']
+        Fee = request.form.get('Fee', event.Fee)
+        duration = request.form.get('duration', event.duration)
+        clasification = request.form.get('clasification', event.clasification)
+        age_restriction = request.form.get('age_restriction', event.age_restriction)
+
+        main_image = request.files.get('mainImage')
+        banner_image = request.files.get('bannerImage')
+        banner_device = request.files.get('bannerImageDevice')
+
+        # Actualizar campos simples
+        if event_name:
+            event.name = event_name
+        if date:
+            event.date = datetime.strptime(date, "%Y-%m-%d").date()
+            event.date_string = date
+        if hour:
+            event.hour_string = hour
+        event.description = description
+        event.Type = Type
+        event.active = active
+        event.Fee = int(Fee) if Fee else None
+        event.duration = duration
+        event.clasification = clasification
+        event.age_restriction = age_restriction
+        event.event_provider = int(event_provider) if event_provider else None
+        event.event_id_provider = int(event_id_provider) if event_id_provider else None
+
+        # Venue update / creation
+        if place:
+            venue = Venue.query.filter_by(name=place).first()
+            if not venue:
+                venue = Venue(name=place, address="No especificada", city="No especificada")
+                db.session.add(venue)
+                db.session.flush()
+            event.venue_id = venue.venue_id
+
+        S3_BUCKET = "imagenes-fiestatravel"
+
+        # Guardar imágenes si vienen
+        if main_image and allowed_image(main_image.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{main_image.filename}"
+            data = main_image.read()
+            content_type = main_image.content_type
+            event.mainImage = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+        if banner_image and allowed_image(banner_image.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{banner_image.filename}"
+            data = banner_image.read()
+            content_type = banner_image.content_type
+            event.bannerImage = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+        if banner_device and allowed_image(banner_device.filename):
+            key = f"events/{event_name.replace(' ', '_')}/{banner_device.filename}"
+            data = banner_device.read()
+            content_type = banner_device.content_type
+            event.bannerImageDevice = utils_backend.upload_to_s3_public(s3, S3_BUCKET, key, data, content_type)
+
+        db.session.commit()
+        return jsonify({'message': 'Evento actualizado correctamente', 'status': 'ok'}), 200
+
+    except requests.exceptions.RequestException as e:
+        db.session.rollback()
+        return jsonify({"message": f"Error en el request externo: {str(e)}"}), 500
+    except Exception as e:
+        db.session.rollback()
+        logging.exception("Error al actualizar evento")
+        return jsonify({'message': 'Error al actualizar evento', 'status': 'error', 'detail': str(e)}), 500
+
+
+@backend.route('/load-events', methods=['GET'])  # ver eventos creados
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_events():
+    """
+    Devuelve:
+      - events: lista plana con cada registro de Event y todos sus campos relevantes (venue embebido, provider embebido,
+                imágenes, tipo, tarifas, duración, clasificación, restricción de edad, conteo de tickets, etc.)
+      - unique_events: lista agrupada por nombre de evento, cada entrada contiene "name" y "venues" (lista de venues disponibles para ese nombre)
+      - providers: lista de proveedores disponibles
+      - status: 'ok' | 'error'
+    El endpoint intenta ser tolerante a diferencias de nombres de modelos (Provider vs Providers).
+    """
     try:
-        events = Event.query.all()
-        providers = Providers.query.all()
+        # Cargar todos los eventos (puedes optimizar con joinedload si lo deseas)
+        events = Event.query.order_by(Event.date.asc(), Event.hour_string.asc()).all()
+
+        # Cargar proveedores si el modelo existe
+        providers = Providers.query.all() if Providers is not None else []
 
         events_list = []
-        for event in events:
-            # Buscamos todos los eventos con el mismo nombre para agrupar sus venues
-            same_events = Event.query.filter_by(name=event.name).all()
+        # Para evitar consultas repetidas, cache de venues por venue_id
+        venue_cache = {}
 
-            venues_list = []
-            for ev in same_events:
-                venues_list.append({
-                    "venue_id": ev.venue.venue_id,
-                    "name": ev.venue.name,
-                    "address": ev.venue.address,
-                    "city": ev.venue.city
-                })
+        for ev in events:
+            # Resolver venue (puede venir por relationship o por FK)
+            venue_obj = None
+            try:
+                # intentar acceso por relación 
+                venue_obj = ev.venue if hasattr(ev, "venue") else None
+            except Exception:
+                venue_obj = None
+
+            if not venue_obj and getattr(ev, "venue_id", None) is not None:
+                vid = ev.venue_id
+                if vid in venue_cache:
+                    venue_obj = venue_cache[vid]
+                else:
+                    venue_obj = Venue.query.filter_by(venue_id=vid).first()
+                    venue_cache[vid] = venue_obj
+
+            venue_payload = None
+            if venue_obj:
+                venue_payload = {
+                    "venue_id": getattr(venue_obj, "venue_id", None),
+                    "name": getattr(venue_obj, "name", None),
+                    "address": getattr(venue_obj, "address", None),
+                    "city": getattr(venue_obj, "city", None)
+                }
+
+            # Resolver proveedor embebido si existe la relación o FK
+            provider_payload = None
+            provider_id_field = getattr(ev, "event_provider", None)
+            if provider_id_field:
+                try:
+                    if Providers is not None:
+                        provider_obj = Providers.query.filter_by(ProviderID=provider_id_field).first()
+                        if provider_obj:
+                            provider_payload = {
+                                "ProviderID": getattr(provider_obj, "ProviderID", None),
+                                "ProviderName": getattr(provider_obj, "ProviderName", None),
+                            }
+                except Exception:
+                    # no romper si la consulta falla, dejar provider_payload como None
+                    provider_payload = None
 
             events_list.append({
-                "event_id": event.event_id,
-                "name": event.name,
-                "description": event.description,
-                "date": event.date.isoformat(),
-                "date_string": event.date_string,
-                "hour_string": event.hour_string,
-                "venue": {
-                    "venue_id": event.venue.venue_id,
-                    "name": event.venue.name,
-                    "address": event.venue.address,
-                    "city": event.venue.city
-                },
-                "venues": venues_list
+                "event_id": getattr(ev, "event_id", None),
+                "name": getattr(ev, "name", None),
+                "description": getattr(ev, "description", None),
+                "date": getattr(ev, "date").isoformat() if getattr(ev, "date", None) else None,
+                "date_string": getattr(ev, "date_string", None),
+                "hour_string": getattr(ev, "hour_string", None),
+                "venue": venue_payload,
+                # lista de todos los venues que comparten el mismo nombre se calculará más abajo en unique_events
+                "Type": getattr(ev, "Type", None),
+                "mainImage": getattr(ev, "mainImage", None),
+                "bannerImage": getattr(ev, "bannerImage", None),
+                "bannerImageDevice": getattr(ev, "bannerImageDevice", None),
+                "active": bool(getattr(ev, "active", True)),
+                "event_id_provider": getattr(ev, "event_id_provider", None),
+                "event_provider": getattr(ev, "event_provider", None),
+                "Fee": getattr(ev, "Fee", None),
+                "duration": getattr(ev, "duration", None),
+                "clasification": getattr(ev, "clasification", None),
+                "age_restriction": getattr(ev, "age_restriction", None),
+                "created_by": getattr(ev, "created_by", None),
+                "created_at": getattr(ev, "created_at").isoformat() if getattr(ev, "created_at", None) else None,
             })
 
+        # Construir lista de proveedores con shape esperado por frontend
         providers_list = []
-        for provider in providers:
+        for p in providers:
             providers_list.append({
-                "ProviderID": provider.ProviderID,
-                "ProviderName": provider.ProviderName,
+                "ProviderID": getattr(p, "ProviderID", None),
+                "ProviderName": getattr(p, "ProviderName", None),
             })
 
+        # Construir unique_events agrupado por nombre de evento, con lista de venues (sin duplicados)
+        unique_events_map = {}
+        for ev in events_list:
+            name = ev.get("name") or "Sin nombre"
+            if name not in unique_events_map:
+                unique_events_map[name] = {"name": name, "venues": []}
 
-        all_events = {event["event_id"]: event for event in events_list}.values() # Eliminar duplicados por event_id
-        unique_events = {event["name"]: event for event in events_list}.values() # Eliminar duplicados por nombre de evento
+            # Evitar duplicar venues en la misma entrada
+            v = ev.get("venue")
+            if v:
+                existing_ids = {ven["venue_id"] for ven in unique_events_map[name]["venues"] if ven.get("venue_id") is not None}
+                if v.get("venue_id") not in existing_ids:
+                    unique_events_map[name]["venues"].append(v)
 
-        return jsonify({"events": list(all_events), "unique_events": list(unique_events), 'status': 'ok', "providers": providers_list}), 200
+        # Eliminar duplicados por event_id en la lista principal (por si acaso)
+        all_events = {e["event_id"]: e for e in events_list if e.get("event_id") is not None}
+        # si hay eventos sin event_id, los añadimos igualmente con claves incrementales para preservarlos
+        missing_id_events = [e for e in events_list if e.get("event_id") is None]
+        for i, e in enumerate(missing_id_events, start=1):
+            all_events[f"noid-{i}"] = e
+
+        return jsonify({
+            "events": list(all_events.values()),
+            "unique_events": list(unique_events_map.values()),
+            "providers": providers_list,
+            "status": "ok"
+        }), 200
 
     except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error al crear evento: {e}")
-        return jsonify({'message': 'Error al crear evento', 'status': 'error'}), 500
+        # rollback en caso de haber modificado la sesión
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logging.exception("Error al cargar eventos")
+        return jsonify({'message': 'Error al cargar eventos', 'status': 'error', 'detail': str(e)}), 500
     
-@backend.route('/load-tickets', methods=['GET']) #ver paquetes o ventas en general
+@backend.route('/load-sales', methods=['GET']) #ver ventas en general
 @roles_required(allowed_roles=["admin", "tiquetero"])
-def load_tickets():
+def load_sales():
     try:
 
         from_date_str = request.args.get('from_date', '')
         statuses_str = request.args.get('status', '')
+        until_date_str = request.args.get('until_date', '')
+        events_str = request.args.get('events', '')
 
         if not from_date_str and not statuses_str:
             return jsonify({'message': 'Se requiere al menos un filtro (from_date o status)', 'status': 'error'}), 400
@@ -828,41 +992,53 @@ def load_tickets():
             joinedload(Event.venue).load_only(
                 Venue.venue_id, Venue.name, Venue.address, Venue.city
             ),
-            load_only(Event.event_id, Event.name, Event.description, Event.date, Event.date_string, Event.hour_string, Event.venue_id)
-        ).filter(Event.active == True).all()
+            load_only(Event.event_id, Event.name, Event.description, Event.date, Event.date_string, Event.hour_string, Event.venue_id, Event.active)
+        ).all()
 
         events_dict = {}
+        all_events = []
         for event in events:
-            if event.name not in events_dict:
-                events_dict[event.name] = {
-                    "event_id": event.event_id,
-                    "name": event.name,
-                    "description": event.description,
-                    "venues": []
-                }
 
-            # Buscamos si el venue ya está agregado para este evento
-            existing_venue = next((v for v in events_dict[event.name]["venues"]
-                                if v["venue_id"] == event.venue.venue_id), None)
-            if existing_venue:
-                existing_venue["dates"].append({
-                    "date": event.date.isoformat(),
-                    "hour": event.hour_string
-                })
-            else:
-                events_dict[event.name]["venues"].append({
-                    "venue_id": event.venue.venue_id,
-                    "name": event.venue.name,
-                    "address": event.venue.address,
-                    "city": event.venue.city,
-                    "dates": [{
-                        "date": event.date_string,
+            all_events.append({
+                'event_id': event.event_id,
+                'event': event.name,
+                'venue': event.venue.name if event.venue else None,
+                'event_date': event.date_string,
+                'event_hour': event.hour_string,
+            })
+
+            if event.active == True: # Solo agregamos eventos activos
+                if event.name not in events_dict:
+                    events_dict[event.name] = {
+                        "event_id": event.event_id,
+                        "name": event.name,
+                        "description": event.description,
+                        "venues": [],
+                    }
+
+                # Buscamos si el venue ya está agregado para este evento
+                existing_venue = next((v for v in events_dict[event.name]["venues"]
+                                    if v["venue_id"] == event.venue.venue_id), None)
+                if existing_venue:
+                    existing_venue["dates"].append({
+                        "date": event.date.isoformat(),
                         "hour": event.hour_string
-                    }]
-                })
+                    })
+                else:
+                    events_dict[event.name]["venues"].append({
+                        "venue_id": event.venue.venue_id,
+                        "name": event.venue.name,
+                        "address": event.venue.address,
+                        "city": event.venue.city,
+                        "dates": [{
+                            "date": event.date_string,
+                            "hour": event.hour_string
+                        }]
+                    })
 
         # Parse from_date as a datetime object if provided
         from_date = None
+        until_date = None
 
         
         if from_date_str:
@@ -871,6 +1047,15 @@ def load_tickets():
                 from_date = datetime.strptime(from_date_str, '%Y-%m-%d')
             except ValueError:
                 return jsonify({'message': 'Formato de fecha inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
+            
+        if until_date_str:
+            until_date_str = until_date_str.split('T')[0]  # Extraer solo la parte de la fecha
+            try:
+                until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'message': 'Formato de fecha inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
+
+        events = events_str.split(',') if events_str else []
 
         statuses = statuses_str.split(',') if statuses_str else []
 
@@ -878,13 +1063,22 @@ def load_tickets():
         query = Sales.query.options(
             joinedload(Sales.customer).load_only(EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email),
             joinedload(Sales.event_rel).load_only(Event.name),
-            load_only(Sales.sale_id, Sales.status, Sales.price, Sales.discount, Sales.fee, Sales.saleLocator, Sales.saleLink, Sales.creation_date)
+            load_only(Sales.sale_id, Sales.event, Sales.status, Sales.price, Sales.discount, Sales.fee, Sales.saleLocator, Sales.saleLink, Sales.creation_date)
         )
 
         filters = []
+        filters_stats = []
         if from_date:
             from_date = from_date.date()  # asegúrate de tener un date
             filters.append(Sales.creation_date >= from_date)
+            filters_stats.append(Sales.creation_date >= from_date)
+        if until_date_str:
+            until_date = until_date.date()  # asegúrate de tener un date
+            filters.append(Sales.creation_date <= until_date)
+            filters_stats.append(Sales.creation_date <= until_date)
+        if events and any(events):
+            filters.append(Sales.event.in_(events))
+            filters_stats.append(Sales.event.in_(events))
         if statuses and any(statuses):
             filters.append(Sales.status.in_(statuses))
 
@@ -910,7 +1104,33 @@ def load_tickets():
 
         sales_data = sorted(sales_data, key=lambda x: x['saleDate'], reverse=True)
 
-        return jsonify({"unique_events": list(events_dict.values()), "events": list(events_dict.values()), "sales": sales_data, "status": "ok"}), 200
+        # Cálculo de totales
+        sales_info = {}
+
+        # Usar CASE con IN para los estados "pendientes" y asegurar valores por defecto
+        sums_query = (
+            db.session.query(
+                # total de ventas pagadas
+                func.coalesce(func.sum(case((Sales.status == 'pagado', 1), else_=0)), 0).label('total_paid_sales'),
+                # total de ventas en estados pendientes (una sola CASE con IN)
+                func.coalesce(func.sum(case((Sales.status.in_(['pagado por verificar', 'pendiente pago']), 1), else_=0)), 0).label('total_pending_sales'),
+            )
+            .select_from(Sales)
+            .filter(
+                and_(*filters_stats),
+            )
+        )
+
+        # one_or_none normalmente devuelve una fila con agregados; proteger contra None por seguridad
+        agg = sums_query.one_or_none() or type('AGG', (), {'total_paid_sales': 0, 'total_pending_sales': 0})()
+
+        total_paid_sales = int(agg.total_paid_sales or 0)
+        total_pending_sales = int(agg.total_pending_sales or 0)
+
+        sales_info['total_paid_sales'] = total_paid_sales
+        sales_info['total_pending_sales'] = total_pending_sales
+
+        return jsonify({"unique_events": list(events_dict.values()), "events": all_events, "sales": sales_data, "status": "ok", "dashboard_data": sales_info}), 200
 
 
     except Exception as e:
@@ -1287,7 +1507,7 @@ def create_liquidation_post():
             return jsonify({'message': 'Configuración de almacenamiento no encontrada', 'status': 'error'}), 500
 
         s3_key = f"liquidations/{liquidation.LiquidationID}.pdf"
-        uploaded = utils_backend.upload_to_s3(s3, S3_BUCKET, s3_key, pdf_bytes, content_type='application/pdf')
+        uploaded = utils_backend.upload_to_s3_private(s3, S3_BUCKET, s3_key, pdf_bytes, content_type='application/pdf')
         if not uploaded:
             # No hacemos rollback porque la DB fue commiteada, pero informamos
             return jsonify({'message': 'Error subiendo PDF a almacenamiento', 'status': 'error'}), 500
@@ -2127,9 +2347,11 @@ def block_tickets():
     contact_phone_prefix = data.get("countryCode")
     selectedSeats = data.get('selectedSeats')
     email = request.json.get('email')
-    firstname = request.json.get('firstname', '')
-    lastname = request.json.get('lastname', '')
+    firstname = bleach.clean(request.json.get('firstname', ''), strip=True)
+    lastname = bleach.clean(request.json.get('lastname', ''), strip=True)
     date = request.json.get('PaymentDate')
+    cedula = request.json.get('cedula', '').strip()
+    address = bleach.clean(request.json.get('shortAddress', ''), strip=True)
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -2137,10 +2359,10 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
     # ----------------------------------------------------------------
-    if not all([user_id, payment_method, tickera_id, tickera_api_key, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix]):
+    if not all([user_id, payment_method, tickera_id, tickera_api_key, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
-    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito"]:
+    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe"]:
         return jsonify({"message": "Método de pago no válido"}), 400
     
     if len(selectedSeats) == 0:
@@ -2149,6 +2371,13 @@ def block_tickets():
     email = email.strip().lower()
     if not utils.email_pattern.match(email):
         return jsonify({"message": "Correo electrónico no válido"}), 400
+    
+    if not utils.cedula_pattern.match(cedula):
+        return jsonify({"message": "Cédula no válida"}), 400
+    
+    cedula =cedula.upper()
+    
+
 
     # ----------------------------------------------------------------
     # 2️⃣ Validar información del pago
@@ -2180,6 +2409,9 @@ def block_tickets():
             role='passive_customer',
             status='unverifed',
             CreatedBy=user_id,
+            Identification=cedula,
+            PhoneNumber=full_phone_number,
+            Address=address
         )
         db.session.add(customer)
         db.session.flush()  # para obtener customer_id
@@ -2609,55 +2841,54 @@ def new_abono():
         #customer
         customer = new_payment_entry.sale.customer
         #verificamos que tipo de evento es  
-        if new_payment_entry.sale.event_rel.Type == 'Espectaculo':
 
-            Tickets = []
-            
-            ticket_ids = new_payment_entry.sale.ticket_ids.split('|') if '|' in new_payment_entry.sale.ticket_ids else [new_payment_entry.sale.ticket_ids]
-            for ticket_id in ticket_ids:
-                if ticket_id:
-                    ticket = Ticket.query.get(int(ticket_id))
-                    if ticket:
-                        fee = ticket.fee if ticket.fee else 0
-                        discount = ticket.discount if ticket.discount else 0
-
-                        t = {
-                            'ticket_id': ticket.ticket_id,  
-                            'row': ticket.seat.row,
-                            'number': ticket.seat.number,
-                            'section': ticket.seat.section.name,
-                            'event': ticket.price,
-                            'price': round(ticket.price/100, 2),
-                            'fee': round(fee/100, 2),
-                            'discount': round(discount/100, 2)
-                        }
-                        Tickets.append(t)
-
-            qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={new_payment_entry.sale.saleLink}'
+        Tickets = []
         
-            sale_data = {
-                'sale_id': new_payment_entry.sale.sale_id,
-                'event': new_payment_entry.sale.event_rel.name,
-                'venue': new_payment_entry.sale.event_rel.venue.name,
-                'date': new_payment_entry.sale.event_rel.date_string,
-                'hour': new_payment_entry.sale.event_rel.hour_string,
-                'price': round(new_payment_entry.sale.price/100, 2),
-                'fee': round(new_payment_entry.sale.fee/100, 2),
-                'discount': round(new_payment_entry.sale.discount/100, 2),
-                'total_abono': round(received/100, 2),
-                'due': round((new_payment_entry.sale.price + new_payment_entry.sale.fee - new_payment_entry.sale.discount)/100, 2),
-                'payment_method': PaymentMethod,
-                'payment_date': PaymentDate,
-                'reference': PaymentReference,
-                'link_reserva': qr_link,
-                'deadline_reserva': new_payment_entry.sale.financiamiento_rel.Deadline,
-                'localizador': new_payment_entry.sale.saleLocator,
-                'status': 'pendiente',
-                'title': 'Estamos procesando tu abono',
-                'subtitle': 'Te notificaremos una vez que haya sido aprobado',
-            }
+        ticket_ids = new_payment_entry.sale.ticket_ids.split('|') if '|' in new_payment_entry.sale.ticket_ids else [new_payment_entry.sale.ticket_ids]
+        for ticket_id in ticket_ids:
+            if ticket_id:
+                ticket = Ticket.query.get(int(ticket_id))
+                if ticket:
+                    fee = ticket.fee if ticket.fee else 0
+                    discount = ticket.discount if ticket.discount else 0
 
-            utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+                    t = {
+                        'ticket_id': ticket.ticket_id,  
+                        'row': ticket.seat.row,
+                        'number': ticket.seat.number,
+                        'section': ticket.seat.section.name,
+                        'event': ticket.price,
+                        'price': round(ticket.price/100, 2),
+                        'fee': round(fee/100, 2),
+                        'discount': round(discount/100, 2)
+                    }
+                    Tickets.append(t)
+
+        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={new_payment_entry.sale.saleLink}'
+    
+        sale_data = {
+            'sale_id': new_payment_entry.sale.sale_id,
+            'event': new_payment_entry.sale.event_rel.name,
+            'venue': new_payment_entry.sale.event_rel.venue.name,
+            'date': new_payment_entry.sale.event_rel.date_string,
+            'hour': new_payment_entry.sale.event_rel.hour_string,
+            'price': round(new_payment_entry.sale.price/100, 2),
+            'fee': round(new_payment_entry.sale.fee/100, 2),
+            'discount': round(new_payment_entry.sale.discount/100, 2),
+            'total_abono': round(received/100, 2),
+            'due': round((new_payment_entry.sale.price + new_payment_entry.sale.fee - new_payment_entry.sale.discount)/100, 2),
+            'payment_method': PaymentMethod,
+            'payment_date': PaymentDate,
+            'reference': PaymentReference,
+            'link_reserva': qr_link,
+            'deadline_reserva': new_payment_entry.sale.financiamiento_rel.Deadline,
+            'localizador': new_payment_entry.sale.saleLocator,
+            'status': 'pendiente',
+            'title': 'Estamos procesando tu abono',
+            'subtitle': 'Te notificaremos una vez que haya sido aprobado',
+        }
+
+        utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
 
         db.session.commit()
 
@@ -2760,311 +2991,308 @@ def approve_abono():
         paymentDeadline = payment.sale.financiamiento_rel.Deadline if (payment.sale.financiamiento_rel and payment.sale.financiamiento_rel.Deadline) else ''
         event = payment.sale.event_rel
 
-        # 4️⃣ Verificar tipo de evento
-        if payment.sale.event_rel.Type == 'Espectaculo':
+        Tickets = []
+        ticket_ids = []
+        raw_ticket_ids = payment.sale.ticket_ids or ''
+        for tid in raw_ticket_ids.split('|'):
+            tid_str = str(tid).strip()
+            if not tid_str:
+                continue
+            try:
+                ticket_ids.append(int(tid_str))
+            except ValueError:
+                logging.warning(f"Ignorando ticket_id inválido: {tid_str}")
+                continue
 
-            Tickets = []
-            ticket_ids = []
-            raw_ticket_ids = payment.sale.ticket_ids or ''
-            for tid in raw_ticket_ids.split('|'):
-                tid_str = str(tid).strip()
-                if not tid_str:
-                    continue
-                try:
-                    ticket_ids.append(int(tid_str))
-                except ValueError:
-                    logging.warning(f"Ignorando ticket_id inválido: {tid_str}")
-                    continue
+        tickets_to_release = []
+        tickets = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
 
-            tickets_to_release = []
-            tickets = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
+        if not tickets:
+            return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
 
-            if not tickets:
-                return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
+        for ticket in tickets:
+            t = {
+                'ticket_id': ticket.ticket_id,
+                'row': ticket.seat.row,
+                'number': ticket.seat.number,
+                'section': ticket.seat.section.name,
+                'event': ticket.price,
+                'price': round(ticket.price / 100, 2)
+            }
+            Tickets.append(t)
+            tickets_to_release.append(ticket.ticket_id_provider)
 
-            for ticket in tickets:
-                t = {
-                    'ticket_id': ticket.ticket_id,
-                    'row': ticket.seat.row,
-                    'number': ticket.seat.number,
-                    'section': ticket.seat.section.name,
-                    'event': ticket.price,
-                    'price': round(ticket.price / 100, 2)
-                }
-                Tickets.append(t)
-                tickets_to_release.append(ticket.ticket_id_provider)
-
-                if aprobacion == 'rechazado':
-                    if cancel_reservation:
-                        if ticket.status in ['pagado por verificar', 'pendiente pago']:
-                            ticket.status = 'disponible'
-                            ticket.sale_id = None
-                            ticket.fee = 0
-                            ticket.expires_at = None
-                            ticket.customer_id = None
-                            ticket.blockedBy = None
-                        else:
-                            return jsonify({'message': f'El ticket {ticket.ticket_id} no está en un estado válido para ser liberado', 'status': 'error'}), 400
-
-            qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
-
-            # 5️⃣ Rama de RECHAZO
             if aprobacion == 'rechazado':
+                if cancel_reservation:
+                    if ticket.status in ['pagado por verificar', 'pendiente pago']:
+                        ticket.status = 'disponible'
+                        ticket.sale_id = None
+                        ticket.fee = 0
+                        ticket.expires_at = None
+                        ticket.customer_id = None
+                        ticket.blockedBy = None
+                    else:
+                        return jsonify({'message': f'El ticket {ticket.ticket_id} no está en un estado válido para ser liberado', 'status': 'error'}), 400
 
-                payment.Status = 'rechazado'
-                payment.ApprovedBy = user_id
-                payment.ApprovalDate = datetime.now()
+        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
 
-                # ⚠️ Evitar autoflush prematuro que causa EOF detected
-                with db.session.no_autoflush:
-                    log_for_rechazo = Logs(
-                        UserID=user_id,
-                        Type='abono',
-                        Timestamp=datetime.now(),
-                        Details=f"Abono de {received} rechazado para la venta {payment.sale.sale_id}",
-                        SaleID=payment.sale.sale_id
-                    )
-                    db.session.add(log_for_rechazo)
+        # 5️⃣ Rama de RECHAZO
+        if aprobacion == 'rechazado':
 
-                    if cancel_reservation:
-                        payment.sale.status = 'cancelado'
+            payment.Status = 'rechazado'
+            payment.ApprovedBy = user_id
+            payment.ApprovalDate = datetime.now()
 
-                        # 🔗 Llamar a Tickera para liberar los tickets bloqueados
-                        try:
-                            tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
-                            tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
-                            url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
-
-                            logging.info("Liberando tickets en Tickera...")
-
-                            payload = {
-                                "event": event.event_id_provider,
-                                "tickets": tickets_to_release,
-                                "tickera_id": tickera_id,
-                                "tickera_api_key": tickera_api_key
-                            }
-
-                            response_block = requests.post(url_block, json=payload, timeout=60)
-
-                            if response_block.status_code != 200:
-                                db.session.rollback()
-                                return jsonify({
-                                    "status": "error",
-                                    "code": response_block.status_code,
-                                    "message": response_block.json().get("message", "Error desconocido en Tickera")
-                                }), response_block.status_code
-
-                        except requests.exceptions.RequestException as e:
-                            db.session.rollback()
-                            logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
-                            return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
-
-                    sale_data = {
-                        'sale_id': payment.sale.sale_id,
-                        'event': payment.sale.event_rel.name,
-                        'venue': payment.sale.event_rel.venue.name,
-                        'date': payment.sale.event_rel.date_string,
-                        'hour': payment.sale.event_rel.hour_string,
-                        'price': round(payment.sale.price / 100, 2),
-                        'fee': round(payment.sale.fee / 100, 2),
-                        'discount': round(payment.sale.discount / 100, 2),
-                        'total_abono': round(received / 100, 2),
-                        'due': round((payment.sale.price + payment.sale.fee - payment.sale.discount - received) / 100, 2),
-                        'payment_method': PaymentMethod,
-                        'payment_date': payment.PaymentDate if payment.PaymentDate else '',
-                        'reference': payment.Reference if payment.Reference else '',
-                        'link_reserva': qr_link,
-                        'deadline_reserva': paymentDeadline,
-                        'localizador': payment.sale.saleLocator,
-                        'status': 'rechazado',
-                        'title': 'Tu Abono no pudo ser procesado',
-                        'subtitle': 'Por favor contacta a un administrador para más información'
-                    }
-
-                    utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
-
-                db.session.commit()
-                return jsonify({'message': 'Abono rechazado exitosamente', 'status': 'ok'}), 200
-
-            # 6️⃣ Rama de APROBACIÓN
-            PaymentDate = request.json.get('PaymentDate')
-            PaymentReference = request.json.get('PaymentReference')
-
-            if not all([PaymentDate, PaymentReference]):
-                return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
-            
-            payment_date_str = PaymentDate
-
-            # Convierte a objeto datetime
-            if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', payment_date_str):
-                payment_date = datetime.strptime(payment_date_str, "%d/%m/%Y").date()
-            else:
-                # Si viene en formato Y/m/d (o cualquier otro), no convertirlo aquí
-                payment_date = payment_date_str
-            
             # ⚠️ Evitar autoflush prematuro que causa EOF detected
             with db.session.no_autoflush:
-
-                log_for_abono = Logs(
+                log_for_rechazo = Logs(
                     UserID=user_id,
                     Type='abono',
                     Timestamp=datetime.now(),
-                    Details=f"Abono de {received} aprobado para la venta {payment.sale.sale_id}",
+                    Details=f"Abono de {received} rechazado para la venta {payment.sale.sale_id}",
                     SaleID=payment.sale.sale_id
                 )
-                db.session.add(log_for_abono)
+                db.session.add(log_for_rechazo)
 
-                # Actualizar el payment
-                payment.Status = 'aprobado'
-                payment.ApprovedBy = user_id
-                payment.ApprovalDate = datetime.now()
-                payment.Amount = received
-                payment.PaymentMethod = PaymentMethod
-                payment.PaymentDate = payment_date
-                payment.Reference = PaymentReference
-                payment.sale.paid += received
+                if cancel_reservation:
+                    payment.sale.status = 'cancelado'
 
-                reserva_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
-                
+                    # 🔗 Llamar a Tickera para liberar los tickets bloqueados
+                    try:
+                        tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+                        tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+                        url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
 
-                # Verificar si ya está completamente pagada
-                if payment.sale.paid + payment.sale.discount >= payment.sale.price + payment.sale.fee:
+                        logging.info("Liberando tickets en Tickera...")
 
-                    # ---------------------------------------------------------------
-                    # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
-                    # ---------------------------------------------------------------
-                    url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
-
-                    response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-                    exchangeRate = 0
-
-                    if response_exchange.status_code != 200:
-                        logging.error(response_exchange.status_code)
-                        return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-                    exchange_data = response_exchange.json()
-                    exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-                    if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-                        return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-                    
-                    exchangeRate = int(exchangeRate*100)
-
-
-                    payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
-                    payment.sale.status = 'pagado' #cambiamos el estado de la venta a aprobado si ya se pagó todo
-                    ticket_ids = payment.sale.ticket_ids.split('|') if '|' in payment.sale.ticket_ids else [payment.sale.ticket_ids]
-
-                    total_fee= 0
-
-                    for ticket_id in ticket_ids:
-                        if not ticket_id:
-                            continue
-
-                        ticket = Ticket.query.get(int(ticket_id))
-                        if not ticket:
-                            return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
-
-                        ticket.status = 'pagado'
-                        ticket.availability_status = 'Listo para canjear'
-                        ticket.emission_date = datetime.now().date()
-
-                        log_for_emision = Logs(
-                            UserID=user_id,
-                            Type='emision de boleto',
-                            Timestamp=datetime.now(),
-                            Details=f"Emisión de boleto {ticket.ticket_id} para la venta {payment.sale.sale_id}",
-                            SaleID=payment.sale.sale_id,
-                            TicketID=ticket.ticket_id
-                        )
-                        db.session.add(log_for_emision)
-
-                        serializer = current_app.config['serializer']
-                        token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': payment.sale.sale_id})
-                        localizador = os.urandom(3).hex().upper()
-
-                        ticket.saleLink = token
-                        ticket.saleLocator = localizador
-
-                        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
-
-                        sale_data = {
-                            'row': ticket.seat.row,
-                            'number': ticket.seat.number,
-                            'section': ticket.seat.section.name,
-                            'event': ticket.event.name,
-                            'venue': ticket.event.venue.name,
-                            'date': ticket.event.date_string,
-                            'hour': ticket.event.hour_string,
-                            'price': round(ticket.price / 100, 2),
-                            'discount': round(ticket.discount / 100, 2),
-                            'fee': round(ticket.fee / 100, 2),
-                            'total': round((ticket.price + ticket.fee - ticket.discount) / 100, 2),
-                            'link_reserva': qr_link,
-                            'localizador': localizador
+                        payload = {
+                            "event": event.event_id_provider,
+                            "tickets": tickets_to_release,
+                            "tickera_id": tickera_id,
+                            "tickera_api_key": tickera_api_key
                         }
 
-                        total_fee += ticket.fee if ticket.fee else 0
+                        response_block = requests.post(url_block, json=payload, timeout=60)
 
-                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+                        if response_block.status_code != 200:
+                            db.session.rollback()
+                            return jsonify({
+                                "status": "error",
+                                "code": response_block.status_code,
+                                "message": response_block.json().get("message", "Error desconocido en Tickera")
+                            }), response_block.status_code
 
-                    IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                    amount_with_IVA = int(received * IVA / (1 + IVA))
-                    IVA_amount = received - amount_with_IVA
+                    except requests.exceptions.RequestException as e:
+                        db.session.rollback()
+                        logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
+                        return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
 
-                    sale_data = {
-                        'sale_id': str(payment.sale.sale_id),
-                        'event': payment.sale.event_rel.name,
-                        'venue': payment.sale.event_rel.venue.name,
-                        'date': payment.sale.event_rel.date_string,
-                        'hour': payment.sale.event_rel.hour_string,
-                        'price': round(payment.sale.price*exchangeRate / 10000, 2),
-                        'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
-                        'net_amount': round(amount_with_IVA*exchangeRate / 10000, 2),
-                        'total_abono': round(received*exchangeRate / 10000, 2),
-                        'payment_method': PaymentMethod,
-                        'payment_date': PaymentDate,
-                        'reference': PaymentReference,
-                        'link_reserva': reserva_link,
-                        'localizador': payment.sale.saleLocator,
-                        'exchange_rate_bsd': round(exchangeRate/100, 2),
-                        'status': 'aprobado',
-                        'title': 'Tu pago ha sido procesado exitosamente',
-                        'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
-                    }
+                sale_data = {
+                    'sale_id': payment.sale.sale_id,
+                    'event': payment.sale.event_rel.name,
+                    'venue': payment.sale.event_rel.venue.name,
+                    'date': payment.sale.event_rel.date_string,
+                    'hour': payment.sale.event_rel.hour_string,
+                    'price': round(payment.sale.price / 100, 2),
+                    'fee': round(payment.sale.fee / 100, 2),
+                    'discount': round(payment.sale.discount / 100, 2),
+                    'total_abono': round(received / 100, 2),
+                    'due': round((payment.sale.price + payment.sale.fee - payment.sale.discount - received) / 100, 2),
+                    'payment_method': PaymentMethod,
+                    'payment_date': payment.PaymentDate if payment.PaymentDate else '',
+                    'reference': payment.Reference if payment.Reference else '',
+                    'link_reserva': qr_link,
+                    'deadline_reserva': paymentDeadline,
+                    'localizador': payment.sale.saleLocator,
+                    'status': 'rechazado',
+                    'title': 'Tu Abono no pudo ser procesado',
+                    'subtitle': 'Por favor contacta a un administrador para más información'
+                }
 
-                    # Actualizar métricas del evento (asegurar que None se trate como 0)
-                    event.total_sales = (event.total_sales or 0) + 1
-                    event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
-                    event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
-
-                    utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
-                else:
-
-                    sale_data = {
-                        'sale_id': str(payment.sale.sale_id),
-                        'event': payment.sale.event_rel.name,
-                        'venue': payment.sale.event_rel.venue.name,
-                        'date': payment.sale.event_rel.date_string,
-                        'hour': payment.sale.event_rel.hour_string,
-                        'price': round(payment.sale.price / 100, 2),
-                        'fee': round(payment.sale.fee / 100, 2),
-                        'discount': round(payment.sale.discount / 100, 2),
-                        'total_abono': round(received / 100, 2),
-                        'due': round((payment.sale.price + payment.sale.fee - payment.sale.discount - received) / 100, 2),
-                        'payment_method': PaymentMethod,
-                        'payment_date': PaymentDate,
-                        'reference': PaymentReference,
-                        'link_reserva': reserva_link,
-                        'deadline_reserva': paymentDeadline,
-                        'localizador': payment.sale.saleLocator,
-                        'status': 'aprobado',
-                        'title': 'Tu Abono ha sido procesado exitosamente',
-                        'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu abono'
-                    }
-
-                    utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+                utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
 
             db.session.commit()
+            return jsonify({'message': 'Abono rechazado exitosamente', 'status': 'ok'}), 200
+
+        # 6️⃣ Rama de APROBACIÓN
+        PaymentDate = request.json.get('PaymentDate')
+        PaymentReference = request.json.get('PaymentReference')
+
+        if not all([PaymentDate, PaymentReference]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+        
+        payment_date_str = PaymentDate
+
+        # Convierte a objeto datetime
+        if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', payment_date_str):
+            payment_date = datetime.strptime(payment_date_str, "%d/%m/%Y").date()
+        else:
+            # Si viene en formato Y/m/d (o cualquier otro), no convertirlo aquí
+            payment_date = payment_date_str
+        
+        # ⚠️ Evitar autoflush prematuro que causa EOF detected
+        with db.session.no_autoflush:
+
+            log_for_abono = Logs(
+                UserID=user_id,
+                Type='abono',
+                Timestamp=datetime.now(),
+                Details=f"Abono de {received} aprobado para la venta {payment.sale.sale_id}",
+                SaleID=payment.sale.sale_id
+            )
+            db.session.add(log_for_abono)
+
+            # Actualizar el payment
+            payment.Status = 'aprobado'
+            payment.ApprovedBy = user_id
+            payment.ApprovalDate = datetime.now()
+            payment.Amount = received
+            payment.PaymentMethod = PaymentMethod
+            payment.PaymentDate = payment_date
+            payment.Reference = PaymentReference
+            payment.sale.paid += received
+
+            reserva_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
+            
+
+            # Verificar si ya está completamente pagada
+            if payment.sale.paid + payment.sale.discount >= payment.sale.price + payment.sale.fee:
+
+                # ---------------------------------------------------------------
+                # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
+                # ---------------------------------------------------------------
+                url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+
+                response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
+                exchangeRate = 0
+
+                if response_exchange.status_code != 200:
+                    logging.error(response_exchange.status_code)
+                    return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
+                exchange_data = response_exchange.json()
+                exchangeRate = exchange_data.get("current", {}).get("usd", 0)
+
+                if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
+                    return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
+                
+                exchangeRate = int(exchangeRate*100)
+
+
+                payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
+                payment.sale.status = 'pagado' #cambiamos el estado de la venta a aprobado si ya se pagó todo
+                ticket_ids = payment.sale.ticket_ids.split('|') if '|' in payment.sale.ticket_ids else [payment.sale.ticket_ids]
+
+                total_fee= 0
+
+                for ticket_id in ticket_ids:
+                    if not ticket_id:
+                        continue
+
+                    ticket = Ticket.query.get(int(ticket_id))
+                    if not ticket:
+                        return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
+
+                    ticket.status = 'pagado'
+                    ticket.availability_status = 'Listo para canjear'
+                    ticket.emission_date = datetime.now().date()
+
+                    log_for_emision = Logs(
+                        UserID=user_id,
+                        Type='emision de boleto',
+                        Timestamp=datetime.now(),
+                        Details=f"Emisión de boleto {ticket.ticket_id} para la venta {payment.sale.sale_id}",
+                        SaleID=payment.sale.sale_id,
+                        TicketID=ticket.ticket_id
+                    )
+                    db.session.add(log_for_emision)
+
+                    serializer = current_app.config['serializer']
+                    token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': payment.sale.sale_id})
+                    localizador = os.urandom(3).hex().upper()
+
+                    ticket.saleLink = token
+                    ticket.saleLocator = localizador
+
+                    qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
+
+                    sale_data = {
+                        'row': ticket.seat.row,
+                        'number': ticket.seat.number,
+                        'section': ticket.seat.section.name,
+                        'event': ticket.event.name,
+                        'venue': ticket.event.venue.name,
+                        'date': ticket.event.date_string,
+                        'hour': ticket.event.hour_string,
+                        'price': round(ticket.price / 100, 2),
+                        'discount': round(ticket.discount / 100, 2),
+                        'fee': round(ticket.fee / 100, 2),
+                        'total': round((ticket.price + ticket.fee - ticket.discount) / 100, 2),
+                        'link_reserva': qr_link,
+                        'localizador': localizador
+                    }
+
+                    total_fee += ticket.fee if ticket.fee else 0
+
+                    utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+
+                IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
+                amount_with_IVA = int(received * IVA / (1 + IVA))
+                IVA_amount = received - amount_with_IVA
+
+                sale_data = {
+                    'sale_id': str(payment.sale.sale_id),
+                    'event': payment.sale.event_rel.name,
+                    'venue': payment.sale.event_rel.venue.name,
+                    'date': payment.sale.event_rel.date_string,
+                    'hour': payment.sale.event_rel.hour_string,
+                    'price': round(payment.sale.price*exchangeRate / 10000, 2),
+                    'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
+                    'net_amount': round(amount_with_IVA*exchangeRate / 10000, 2),
+                    'total_abono': round(received*exchangeRate / 10000, 2),
+                    'payment_method': PaymentMethod,
+                    'payment_date': PaymentDate,
+                    'reference': PaymentReference,
+                    'link_reserva': reserva_link,
+                    'localizador': payment.sale.saleLocator,
+                    'exchange_rate_bsd': round(exchangeRate/100, 2),
+                    'status': 'aprobado',
+                    'title': 'Tu pago ha sido procesado exitosamente',
+                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
+                }
+
+                # Actualizar métricas del evento (asegurar que None se trate como 0)
+                event.total_sales = (event.total_sales or 0) + 1
+                event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
+                event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
+
+                utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+            else:
+
+                sale_data = {
+                    'sale_id': str(payment.sale.sale_id),
+                    'event': payment.sale.event_rel.name,
+                    'venue': payment.sale.event_rel.venue.name,
+                    'date': payment.sale.event_rel.date_string,
+                    'hour': payment.sale.event_rel.hour_string,
+                    'price': round(payment.sale.price / 100, 2),
+                    'fee': round(payment.sale.fee / 100, 2),
+                    'discount': round(payment.sale.discount / 100, 2),
+                    'total_abono': round(received / 100, 2),
+                    'due': round((payment.sale.price + payment.sale.fee - payment.sale.discount - received) / 100, 2),
+                    'payment_method': PaymentMethod,
+                    'payment_date': PaymentDate,
+                    'reference': PaymentReference,
+                    'link_reserva': reserva_link,
+                    'deadline_reserva': paymentDeadline,
+                    'localizador': payment.sale.saleLocator,
+                    'status': 'aprobado',
+                    'title': 'Tu Abono ha sido procesado exitosamente',
+                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu abono'
+                }
+
+                utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+
+        db.session.commit()
 
         return jsonify({'message': 'Abono registrado exitosamente', 'status': 'ok'}), 200
 
@@ -3103,7 +3331,7 @@ def cancel_reservation():
 
         sale.status = 'cancelado'
 
-        if sale.event_rel and sale.event_rel.Type == 'Espectaculo':
+        if sale.event_rel:
             # Actualizar el estado de los tickets asociados a "disponible"
             ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
             for ticket_id in ticket_ids:
@@ -3209,93 +3437,91 @@ def modify_reservation():
 
             sale.user_id = customer.CustomerID
             eventName = sale.event_rel.name if sale.event_rel else 'Evento Personalizado'
-            eventType = sale.event_rel.Type
 
             # Actualizar el estado de los tickets asociados si estos ya fueron emitidos
-            if eventType == 'Espectaculo':
 
-                selectedSeats = []
-                
-                ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
-                for ticket_id in ticket_ids:
+            selectedSeats = []
+            
+            ticket_ids = sale.ticket_ids.split('|') if '|' in sale.ticket_ids else [sale.ticket_ids]
+            for ticket_id in ticket_ids:
 
-                    if ticket_id == '':
-                        continue
+                if ticket_id == '':
+                    continue
 
-                    ticket = Ticket.query.get(int(ticket_id))
+                ticket = Ticket.query.get(int(ticket_id))
 
-                    if not ticket:
-                        return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
-                
-                    ticket_dict = {
-                        "section": ticket.seat.section.name,
-                        "row": ticket.seat.row,
-                        "number": ticket.seat.number,
-                        "price": ticket.price
-                    }
-                    
-                    selectedSeats.append(ticket_dict)
-                    
-                    if sale.status == 'pagado':
-
-                        serializer = current_app.config['serializer']
-                        token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': sale.sale_id})
-                        localizador = os.urandom(3).hex().upper()
-
-                        ticket.saleLink = token
-                        ticket.saleLocator = localizador
-                        ticket.emission_date = today
-
-                        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
-
-                        sale_data = {
-                            'row': ticket.seat.row,
-                            'number': ticket.seat.number,
-                            'section': ticket.seat.section.name,
-                            'event': ticket.event.name,
-                            'venue': ticket.event.venue.name,
-                            'date': ticket.event.date_string,
-                            'hour': ticket.event.hour_string,
-                            'price': round(ticket.price/100, 2),
-                            'discount': round(ticket.discount/100, 2),
-                            'fee': round(ticket.fee/100, 2),
-                            'total': round((ticket.price + ticket.fee - ticket.discount)/100, 2),
-                            'link_reserva': qr_link,
-                            'localizador': localizador
-                        }
-
-                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
-
-                serializer = current_app.config['serializer']
-                token = serializer.dumps({'user_id': customer.CustomerID, 'sale_id': sale.sale_id})
-                localizador = os.urandom(3).hex().upper()
-
-                sale.saleLink = token
-                sale.saleLocator = localizador
-
-                qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={token}'
-
-                DeadlineReserva = sale.financiamiento_rel.Deadline if sale.financiamiento_rel else None
-                FinanciamientoType = sale.financiamiento_rel.Type if sale.financiamiento_rel else "decontado"
-
-                sale_data = {
-                    'sale_id': sale.sale_id,
-                    'event': sale.event_rel.name,
-                    'venue': sale.event_rel.venue.name,
-                    'date': sale.event_rel.date_string,
-                    'hour': sale.event_rel.hour_string,
-                    'tickets': selectedSeats,
-                    'total_price': round(sale.price/100, 2) ,
-                    'paid': round(sale.paid/100, 2),
-                    'discount': round(sale.discount/100, 2),
-                    'fee': round(sale.fee/100, 2),
-                    'due': round((sale.price + sale.fee - sale.paid - sale.discount)/100, 2),
-                    'link_reserva': qr_link,
-                    'deadline_reserva': DeadlineReserva,
-                    'localizador': localizador
+                if not ticket:
+                    return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
+            
+                ticket_dict = {
+                    "section": ticket.seat.section.name,
+                    "row": ticket.seat.row,
+                    "number": ticket.seat.number,
+                    "price": ticket.price
                 }
+                
+                selectedSeats.append(ticket_dict)
+                
+                if sale.status == 'pagado':
 
-                utils.sendqr_for_ConfirmedReservationOrFin(FinanciamientoType, current_app.config, db, mail, customer, selectedSeats, sale_data)
+                    serializer = current_app.config['serializer']
+                    token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': sale.sale_id})
+                    localizador = os.urandom(3).hex().upper()
+
+                    ticket.saleLink = token
+                    ticket.saleLocator = localizador
+                    ticket.emission_date = today
+
+                    qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
+
+                    sale_data = {
+                        'row': ticket.seat.row,
+                        'number': ticket.seat.number,
+                        'section': ticket.seat.section.name,
+                        'event': ticket.event.name,
+                        'venue': ticket.event.venue.name,
+                        'date': ticket.event.date_string,
+                        'hour': ticket.event.hour_string,
+                        'price': round(ticket.price/100, 2),
+                        'discount': round(ticket.discount/100, 2),
+                        'fee': round(ticket.fee/100, 2),
+                        'total': round((ticket.price + ticket.fee - ticket.discount)/100, 2),
+                        'link_reserva': qr_link,
+                        'localizador': localizador
+                    }
+
+                    utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+
+            serializer = current_app.config['serializer']
+            token = serializer.dumps({'user_id': customer.CustomerID, 'sale_id': sale.sale_id})
+            localizador = os.urandom(3).hex().upper()
+
+            sale.saleLink = token
+            sale.saleLocator = localizador
+
+            qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={token}'
+
+            DeadlineReserva = sale.financiamiento_rel.Deadline if sale.financiamiento_rel else None
+            FinanciamientoType = sale.financiamiento_rel.Type if sale.financiamiento_rel else "decontado"
+
+            sale_data = {
+                'sale_id': sale.sale_id,
+                'event': sale.event_rel.name,
+                'venue': sale.event_rel.venue.name,
+                'date': sale.event_rel.date_string,
+                'hour': sale.event_rel.hour_string,
+                'tickets': selectedSeats,
+                'total_price': round(sale.price/100, 2) ,
+                'paid': round(sale.paid/100, 2),
+                'discount': round(sale.discount/100, 2),
+                'fee': round(sale.fee/100, 2),
+                'due': round((sale.price + sale.fee - sale.paid - sale.discount)/100, 2),
+                'link_reserva': qr_link,
+                'deadline_reserva': DeadlineReserva,
+                'localizador': localizador
+            }
+
+            utils.sendqr_for_ConfirmedReservationOrFin(FinanciamientoType, current_app.config, db, mail, customer, selectedSeats, sale_data)
 
         log_for_block = Logs(
             UserID=user_id,

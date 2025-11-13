@@ -1,7 +1,5 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app, g
-from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
-from werkzeug.security import  check_password_hash, generate_password_hash
-from extensions import db, s3
+from flask import request, jsonify, Blueprint
+from extensions import db
 from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, EventUserAccess, Providers
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
@@ -10,18 +8,7 @@ from sqlalchemy.orm import joinedload, load_only
 from sqlalchemy import and_, or_, func, case
 import os
 import bleach
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-import eventos.utils as utils
-from extensions import mail
-from decorators.utils import optional_roles, roles_required
-import signup.utils as signup_utils
-import eventos.utils_whatsapp as WA_utils
-import requests
-
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
-import backend.utils as utils_backend
+from decorators.utils import roles_required
 
 providers = Blueprint('providers', __name__)
 
@@ -73,7 +60,7 @@ def load_dashboard():
             })
 
             total_liquidado += (event.liquidado or 0)
-            gross_sales += (getattr(event, 'gross_sales', 0) or 0)
+            gross_sales += ((getattr(event, 'gross_sales', 0) or 0) - (getattr(event, 'total_fees', 0) or 0))
 
             # Contar tickets pagados. Si tienes muchos tickets considera hacer un COUNT en BD
             if event.tickets:
@@ -147,11 +134,25 @@ def load_liquidations():
                 func.coalesce(func.count(Ticket.ticket_id), 0).label('total_tickets_sold'),
                 # CORRECCIÓN: case() en SQLAlchemy 1.4+/2.0 espera whens como elementos posicionales, no como lista.
                 func.coalesce(func.sum(case((Sales.liquidado == True, 1), else_=0)), 0).label('total_tickets_liquidated'),
-                func.coalesce(func.sum((func.coalesce(Sales.price, 0) - func.coalesce(Sales.discount, 0) + func.coalesce(Sales.fee, 0))), 0).label('total_sales_amount_cents'),
-                func.coalesce(func.sum(case(
-                    (Sales.liquidado == True, (func.coalesce(Sales.price, 0) - func.coalesce(Sales.discount, 0) + func.coalesce(Sales.fee, 0))),
-                    else_=0
-                )), 0).label('total_liquidated_amount_cents'),
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(Sales.price, 0)
+                        - func.coalesce(Sales.discount, 0)
+                    ),
+                    0
+                ).label('total_sales_amount_cents'),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Sales.liquidado == True,
+                                func.coalesce(Sales.price, 0)
+                                - func.coalesce(Sales.discount, 0)
+                            ),
+                            else_=0
+                        )
+                    ),
+                    0
+                ).label('total_liquidated_amount_cents'),
             )
             .select_from(Sales)
             .outerjoin(Ticket, Ticket.sale_id == Sales.sale_id)
@@ -303,11 +304,12 @@ def load_liquidations():
             "event_hour": event_obj.hour_string,
             "event_place": event_obj.venue.name if getattr(event_obj, 'venue', None) else '',
             "total_liquidated": total_liquidated_amount,
-            "total_sales": total_sales_amount,
-            "gross_sales": round(((getattr(event_obj, 'gross_sales', 0) or 0) / 100), 2),
+            "gross_sales": total_sales_amount,
             "total_tickets_sold": total_tickets_sold,
             "total_tickets_liquidated": total_tickets_liquidated
         }
+
+        print( "event_info:", event_info )
 
         return jsonify({"sales": sales_data, "liquidations": liquidations_data, "status": "ok", "event": event_info}), 200
     except Exception:

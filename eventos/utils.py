@@ -43,7 +43,7 @@ def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, t
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
 
-        qr_url = update_user_gallery(img, db, ticket, s3)
+        qr_url = update_user_gallery_newQR(img, db, ticket, s3)
 
         subject = f'Tu Boleto de "{sale_data["event"]}" - Fiesta Ticket'
 
@@ -176,7 +176,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         logging.error(f"Error sending email: {e}")
         db.session.rollback()   
 
-def update_user_gallery(img, db, ticket, s3):
+def update_user_gallery_newQR(img, db, ticket, s3):
     S3_BUCKET = "imagenes-fiestatravel"
 
     try:

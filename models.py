@@ -31,6 +31,7 @@ class EventsUsers(db.Model):
     CreatedBy = Column(String)
     LastVerificationAttempt = Column(DateTime)
     BsDExchangeRate = Column(Integer)  # tasa de cambio en bolivares al momento del registro o ultima actualizacion
+    Address = Column(String)
 
     # Relación one-to-many con la tabla EventsUsers
     event_access_entries = db.relationship(
@@ -92,19 +93,18 @@ class Event(db.Model):
 
     event_id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
-    description = Column(String(1000))
+    description = Column(String(10000))
     date = Column(Date, nullable=False)
     date_string = Column(String(255), nullable=False)
     hour_string = Column(String(255), nullable=False)
     venue_id = Column(Integer, ForeignKey('venues.venue_id'), nullable=False)
     created_by = Column(String(255), nullable=False)
     financiamientos = Column(String(50))
-    items_to_sell = Column(String(100)) # Boletos|Pasajes|Hospedaje
-    Type = Column(String) # Espectaculo o Paquete Turistico
+    Type = Column(String) # Big_map, Small_map, No_map
     SVGmap = Column(String) # Mapa SVG del lugar, si aplica
     mainImage = Column(String(500))
-    bannerImage = Column(String(500))
-    bannerImageDevice = Column(String(500))
+    bannerImage = Column(String(500)) #banner principal del evento, horizontal
+    bannerImageDevice = Column(String(500)) #banner adaptativo para dispositivos moviles
     active = Column(Boolean, default=True)
     event_id_provider = Column(Integer) # ID del evento en el proveedor externo (Tickera) #solo si aplica (API)
     event_provider = Column(Integer, ForeignKey('providers.ProviderID'), nullable=True) # Proveedor externo (Tickera u otro)
@@ -236,6 +236,7 @@ class Sales(db.Model):
     sale_id = Column(Integer, primary_key=True)
     ticket_ids = Column(String(50), nullable=False)
     price = Column(Integer, nullable=False)
+    BsDexchangeRate = Column(Integer, nullable=True)
     paid = Column(Integer, nullable=False)
     due_dates = Column(String(1000)) #date|amount|boolean||date|amount|boolean
     user_id = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True)
