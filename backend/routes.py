@@ -3232,6 +3232,7 @@ def approve_abono():
                     ticket.saleLocator = localizador
 
                     qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
+                    discount = 0
 
                     if payment.sale.discount > 0:
                         proportion = ticket.price / total_price

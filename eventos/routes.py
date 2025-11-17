@@ -1437,6 +1437,7 @@ def canjear_ticket():
 def create_stripe_checkout_session():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')
+    discount_code = request.args.get('discount_code', '')
 
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
@@ -1488,6 +1489,15 @@ def create_stripe_checkout_session():
         if not event or not event.active:
             return jsonify({"message": "Evento no encontrado o inactivo"}), 404
         
+        total_discount = 0
+        ### validamos el descuento
+        if discount_code:
+            discount_validation = utils.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'buy')
+            if not discount_validation.get('status'):
+                return jsonify({"message": discount_validation.get('message', 'Error en el descuento')}), 400
+            else:
+                total_discount = discount_validation.get('total_discount', 0)
+        
         tickets_list = []
         tickets_ids = ""
         total_to_pay = 0
@@ -1524,6 +1534,20 @@ def create_stripe_checkout_session():
 
         tickets_ids = tickets_ids[:-1]  # Elimina el último "|"
 
+        if total_discount > (total_to_pay + total_fee):
+            total_discount = total_to_pay + total_fee
+
+        # ----------------------------------------------------------------
+        # 4️⃣ Crear cupón de descuento en Stripe
+        # ----------------------------------------------------------------
+        stripe_coupon_id = None
+        if total_discount > 0:
+            coupon = stripe.Coupon.create(
+                amount_off=int(round(total_discount, 2)),
+                currency="usd"
+            )
+            stripe_coupon_id = coupon.id
+
         # ----------------------------------------------------------------
         # 5️⃣ Crear line_items para Stripe
         # ----------------------------------------------------------------
@@ -1555,17 +1579,29 @@ def create_stripe_checkout_session():
             }
         )
 
+        metadata = {
+            "customer_id": str(user_id),
+            "tickets": str(tickets_ids),
+            "event_id": str(event_id),
+        }
+
+        # Añadir discount_code solo si total_discount != 0 y discount_code no está vacío
+        try:
+            has_discount = float(total_discount) != 0.0
+        except Exception:
+            has_discount = bool(total_discount)
+
+        if discount_code and has_discount:
+            metadata["discount_code"] = discount_code
+
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             line_items=line_items,
             mode="payment",
+            discounts=[{"coupon": stripe_coupon_id}],
             success_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/success?session_id=CHECKOUT_SESSION_ID",
             cancel_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/confirm-purchase?query={event_id}",
-            metadata={
-                "customer_id": str(user_id),
-                "tickets": str(tickets_ids),
-                "event_id": str(event_id)
-            },
+            metadata=metadata,
         )
 
         return jsonify({"url": session.url, "status": "ok"}), 200
