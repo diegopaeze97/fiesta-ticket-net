@@ -12,6 +12,7 @@ import os
 import eventos.utils as utils_eventos
 
 
+
 def handle_checkout_completed(data, config):
     """
     Handles the 'checkout.session.completed' webhook event from Stripe.
@@ -113,12 +114,14 @@ def handle_checkout_completed(data, config):
         Tickets = []
         for t in tickets_en_carrito:
             ticket = {
+                'ticket_id_provider': t.ticket_id_provider,
                 'ticket_id': t.ticket_id,
                 'row': t.seat.row,
                 'number': t.seat.number,
                 'section': t.seat.section.name,
                 'event': t.price,
-                'price': round(t.price / 100, 2)
+                'price': round(t.price / 100, 2),
+                'discount': 0
             }
             Tickets.append(ticket)
             if t.customer_id != int(user_id):
@@ -136,6 +139,34 @@ def handle_checkout_completed(data, config):
                 return jsonify({"message": "Alguno de los tickets ya fue comprado"}), 400
             
 
+        ### si hay descuento, obtener detalles
+        # 1️⃣ Monto del descuento
+        amount_discount = int(session.get("total_details", {}).get("amount_discount", 0))
+        total_discount = 0
+        # 2️⃣ Breakdown (si quieres saber exactamente QUÉ CUPÓN se usó)
+        breakdown = (
+            session.get("total_details", {})
+                   .get("breakdown", {})
+                   .get("discounts", [])
+        )
+
+        discount_code = session.get("metadata", {}).get("discount_code")
+
+        if discount_code and amount_discount > 0:
+            validated_discount = utils_eventos.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'block')
+            if not validated_discount["status"]:
+                return jsonify({"message": "Código de descuento inválido"}), 400
+            total_discount = int(validated_discount['total_discount'])
+            tickets_payload = validated_discount['tickets']
+        else: # sin descuento
+            tickets_payload = Tickets
+
+        if total_discount != amount_discount:
+            logging.warning(f"⚠️ Mismatch en monto de descuento para user {user_id}: esperado {total_discount}, recibido {amount_discount}")
+            sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
+            return jsonify({"message": "Error en el monto de descuento aplicado"}), 400
+            
+
 
         # ----------------------------------------------------------------
         # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
@@ -143,10 +174,7 @@ def handle_checkout_completed(data, config):
         url_block = f"{config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
         payload = {
             "event": event.event_id_provider,
-            "tickets": [
-                {"ticket_id_provider": t.ticket_id_provider, "price": t.price}
-                for t in tickets_en_carrito
-            ],
+            "tickets": tickets_payload,
             "tickera_id": tickera_id,
             "tickera_api_key": tickera_api_key,
             "type_of_sale": "user_sale"
@@ -156,7 +184,7 @@ def handle_checkout_completed(data, config):
             response_block = requests.post(url_block, json=payload, timeout=30)
             response_block.raise_for_status()
         except Exception as e:
-            sendnotification_checkout_failed(config, db, mail, customer, Tickets, event, session)
+            sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
             logging.error(f"Error bloqueando tickets en Tickera: {str(e)}")
             return jsonify({"message": "Error bloqueando tickets en Productora"}), 502
 
@@ -185,7 +213,7 @@ def handle_checkout_completed(data, config):
             StatusFinanciamiento='pagado',
             event=event.event_id,
             fee=total_fee,
-            discount=0,
+            discount=amount_discount,
             saleLink = token,
             saleLocator = localizador
             
@@ -247,22 +275,32 @@ def handle_checkout_completed(data, config):
 
             if response_exchange.status_code != 200:
                 logging.error(response_exchange.status_code)
-                sendnotification_checkout_failed(config, db, mail, customer, Tickets, event, session)
+                sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
                 return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
             exchange_data = response_exchange.json()
             exchangeRate = exchange_data.get("current", {}).get("usd", 0)
 
             if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-                sendnotification_checkout_failed(config, db, mail, customer, Tickets, event, session)
+                sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
                 return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
             
             exchangeRate = int(exchangeRate*100)
+            Fee = (event.Fee or 0)/100
 
             for ticket in tickets_en_carrito:
+                discount_without_fee = 0
+                discount = 0
+
+                if total_discount > 0:
+                    proportion = ticket.price / total_price
+                    discount = int(round(total_discount * proportion, 2))
+                    discount_without_fee = discount / (1 + Fee)
+
 
                 ticket.status = 'pagado'
                 ticket.availability_status = 'Listo para canjear'
                 ticket.emission_date = datetime.now().date()
+                ticket.discount = discount_without_fee
 
                 log_for_emision = Logs(
                     UserID=user_id,
@@ -292,9 +330,9 @@ def handle_checkout_completed(data, config):
                     'date': ticket.event.date_string,
                     'hour': ticket.event.hour_string,
                     'price': round(ticket.price / 100, 2),
-                    'discount': round(ticket.discount / 100, 2),
+                    'discount': round(discount / 100, 2),
                     'fee': round(ticket.fee / 100, 2),
-                    'total': round((ticket.price + ticket.fee - ticket.discount) / 100, 2),
+                    'total': round((ticket.price + ticket.fee - discount) / 100, 2),
                     'link_reserva': qr_link,
                     'localizador': localizador
                 }
@@ -331,6 +369,7 @@ def handle_checkout_completed(data, config):
             event.total_sales = (event.total_sales or 0) + 1
             event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
             event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
+            event.total_discounts = (event.total_discounts or 0) + (int(amount_discount) if amount_discount is not None else 0)
 
         db.session.commit()
 
