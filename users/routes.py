@@ -366,6 +366,26 @@ def login():
         logging.error(f"Error en el login: {e}")
         return jsonify({'status': 'error', 'message': 'Ocurrió un error interno. Intenta nuevamente.'}), 500
     
+@users.route('/logout', methods=['GET'])
+@jwt_required()
+def logout():
+    try:
+        # Decodificar el token actual para obtener el JTI
+        decoded_token = get_jwt()  # Obtiene el payload del token
+        token_jti = decoded_token["jti"]  # Extrae el identificador único del token
+
+        # Guardar el JTI en la base de datos
+        revoked_token = Revoked_tokens(tokens=token_jti)
+        db.session.add(revoked_token)
+        db.session.commit()
+        
+        return jsonify({'message': 'Su sesión ha finalizado', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error logging out: {e}")
+        return jsonify({'message': 'Error logging out'}), 500
+    
 @users.route('/recovery_password_send_code', methods=['POST'])
 #@limiter.limit("5 per minute")
 def recovery_password_send_code():

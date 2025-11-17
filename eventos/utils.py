@@ -4,10 +4,11 @@ import qrcode
 from io import BytesIO
 from flask_mail import Message
 from extensions import db, mail
-from models import EventsUsers
+from models import EventsUsers, Discounts
 import logging
 import uuid
 import re
+from datetime import datetime, timezone
 
 def sendqr_for_ConfirmedReservationOrFin(inscripcion, config, db, mail, user, Tickets, sale_data):
     try:    
@@ -29,7 +30,6 @@ def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, t
         # Genera un token de VALIDACION DE LA INSCRIPCION
 
         qr_link = sale_data['link_reserva']
-        print(f"QR Link: {qr_link}")
 
         recipient = user.Email
 
@@ -139,7 +139,10 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
         message_admin += (
             f'\n---\n'
             f'## 💰 Detalles Financieros\n'
-            f'- **Monto Total de la Venta:** ${sale_data.get("total_abono", "N/A")}\n'
+            f'- **Subtotal:** ${sale_data.get("price", "N/A")}\n'
+            f'- **Fee:** ${sale_data.get("fee", "N/A")}\n'
+            f'- **Descuento:** ${sale_data.get("discount", "N/A")}\n'
+            f'- **Total A Pagar:** ${sale_data.get("total_abono", "N/A")}\n'
             f'- **Método de Pago:** {sale_data.get("payment_method", "N/A")}\n'
             f'- **Referencia/Link:** {sale_data.get("reference", "N/A")}\n\n'
             f'---\n'
@@ -167,8 +170,16 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
 
         subject = f'Gracias por tu compra de {sale_data["event"]} - Fiesta Ticket - FACTURA'
 
+        user_data = {
+            'full_name': f'{user.FirstName} {user.LastName}',
+            'email': user.Email,
+            'phone': user.PhoneNumber or 'No registrado',
+            'address': user.Address or 'No registrado',
+            'identification': user.Identification or 'No registrado'
+        }
+
         msg = Message(subject, sender=config["MAIL_USERNAME"], recipients=[recipient])
-        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data)
+        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
         mail.send(msg)
@@ -237,6 +248,105 @@ def send_ban_notification(email, config):
     except Exception as e:
         logging.exception("Error al enviar el correo de verificación")
         #db.session.rollback()
+
+def validate_discount_code(discount_code, customer, event_details, tickets_en_carrito, type):
+    """
+    Valida un código de descuento y devuelve el descuento aplicable.
+    """
+    #tickets en carrito puede ser una lista de objetos Ticket o diccionarios con 'price' y 'ticket_id'
+    tickets = []
+    for t in tickets_en_carrito:
+        if isinstance(t, dict):
+            tickets.append(t)
+        else:
+            tickets.append({
+                'ticket_id': t.ticket_id,
+                'ticket_id_provider': t.ticket_id_provider,
+                'price': t.price,
+                'discount': 0
+            })
+
+
+    if not discount_code:
+        return 0, None  # No hay código de descuento
+
+    # Use filter_by to avoid passing a tuple into filter() and get a single matching discount
+    discount = Discounts.query.filter_by(Code=discount_code).one_or_none()
+
+    if not discount:
+        return {"status": False, "message": "Código de descuento inválido"}
+    
+    if discount.Active == False:
+        return {"status": False, "message": "Código de descuento inactivo"}
+    
+    if discount.UsageLimit and discount.UsedCount >= discount.UsageLimit:
+        return {"status": False, "message": "Código de descuento agotado"}
+    
+    now = datetime.now(timezone.utc).timestamp()
+
+    def _to_timestamp(val):
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, datetime):
+            # make aware as UTC if naive
+            if val.tzinfo is None:
+                val = val.replace(tzinfo=timezone.utc)
+            return val.timestamp()
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    valid_from_ts = _to_timestamp(discount.ValidFrom)
+    if valid_from_ts and valid_from_ts > now:
+        return {"status": False, "message": "El código de descuento aún no es válido"}
+
+    valid_to_ts = _to_timestamp(discount.ValidTo)
+    if valid_to_ts is None:
+        # no valid end date -> treat as expired/not applicable
+        return {"status": False, "message": "El código de descuento ha expirado"}
+
+    # extend reservation validity by 600s when not a 'buy' operation
+    ValidTo = valid_to_ts if type == 'buy' else valid_to_ts + 600
+    if ValidTo < now:
+        return {"status": False, "message": "El código de descuento ha expirado"}
+    
+    if discount.ApplicableEvents:
+        applicable_event_ids = [int(eid) for eid in discount.ApplicableEvents.split(',') if eid.isdigit()]
+        if event_details.event_id not in applicable_event_ids:
+            return {"status": False, "message": "El código de descuento no es aplicable a este evento"}
+        
+    if discount.ApplicableUsers:
+        applicable_user_ids = [int(uid) for uid in discount.ApplicableUsers.split(',') if uid.isdigit()]
+        if customer.CustomerID not in applicable_user_ids:
+            return {"status": False, "message": "El código de descuento no es aplicable a este usuario"}
+
+    total_discount = 0
+    if discount.Percentage:
+        for ticket in tickets:
+            total_discount += round((discount.Percentage / 100) * ticket["price"], 2)
+            total_discount += round((discount.Percentage / 100) * ticket["price"] * (event_details.Fee / 100), 2)
+            #actualizamos el discount de cada ticket
+            ticket["discount"] = int(round((discount.Percentage / 100) * ticket["price"], 2))
+
+    elif discount.FixedAmount:
+        total_discount = int(discount.FixedAmount) 
+        # Distribuir el descuento entre los tickets en el carrito
+        num_tickets = len(tickets_en_carrito)
+        total_price = sum(t["price"] for t in tickets)
+        if total_price < total_discount:
+            return {"status": False, "message": "El descuento excede el total de la compra"}
+        
+        if num_tickets > 0:
+            for ticket in tickets_en_carrito:
+                discount_per_ticket = int(round((ticket["price"] / total_price) * total_discount, 2))
+                ticket["discount"] = discount_per_ticket
+    else:
+        return {"status": False, "message": "Código de descuento inválido"}
+
+    return {"total_discount": total_discount, "tickets": tickets, "status": True, "message": "Código de descuento aplicado exitosamente"}
     
 email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format
