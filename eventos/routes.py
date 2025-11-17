@@ -2,7 +2,7 @@ from flask import request, jsonify, Blueprint, make_response, session, current_a
 from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3, stripe
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Financiamientos, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt
+from models import EventsUsers, Discounts, Event, Venue, Section, Seat, Ticket, Financiamientos, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -310,6 +310,7 @@ def buy_tickets():
 
         event_id = request.args.get('query', '')
         selected_seats = data.get('tickets', [])
+        discount_code = data.get('discount_code', '').strip()
 
         tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
         tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -335,6 +336,16 @@ def buy_tickets():
             return jsonify({'message': 'Usuario no encontrado'}), 404
         if customer.status.lower() != "verified":
             return jsonify({'message': 'La cuenta no ha sido verificada.'}), 403
+        
+        # ---------------------------------------------------------------
+        #
+        #
+
+        if discount_code:
+            discount_code = bleach.clean(discount_code.upper(), strip=True)
+            validated_discount = utils.validate_discount_code(discount_code, customer, event, selected_seats, 'buy')
+            if not validated_discount["status"]:
+                return jsonify({"message": validated_discount["message"]}), 400
         
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
@@ -649,6 +660,7 @@ def buy_tickets():
 def get_paymentdetails():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')
+    discount_code = request.args.get('discount_code', '').strip()
 
     if not event_id:
         return jsonify({"message": "Falta el ID de evento"}), 400
@@ -695,9 +707,19 @@ def get_paymentdetails():
         tickets = []
         total_price = 0
         total_fee = 0
+        total_discount = 0
         expires_at = None
 
         event_details = tickets_en_carrito[0].event
+        Fee = event_details.Fee if event_details.Fee else 0
+        
+        if discount_code:
+            discount_code = bleach.clean(discount_code.upper(), strip=True)
+            validated_discount = utils.validate_discount_code(discount_code, customer, event_details, tickets_en_carrito, 'buy')
+            if not validated_discount["status"]:
+                return jsonify({"message": validated_discount["message"]}), 400
+            else:
+                total_discount = validated_discount['total_discount']
         
         for ticket in tickets_en_carrito:
             seat = ticket.seat
@@ -718,7 +740,6 @@ def get_paymentdetails():
             if not expires_at or (ticket.expires_at and ticket.expires_at < expires_at):
                 expires_at = ticket.expires_at
 
-            Fee = ticket.event.Fee if ticket.event else 0
             total_fee += (Fee * ticket.price / 100) if Fee else 0
 
             if ticket.expires_at < datetime.utcnow():
@@ -753,6 +774,7 @@ def get_paymentdetails():
             "tickets": tickets,
             "event": event_dict,
             "total_price": total_price,
+            "total_discount": total_discount,
             "total_fee": total_fee,
             "expires_at": expires_at.isoformat() if expires_at else None,
             "BsDExchangeRate": customer.BsDExchangeRate,
@@ -772,6 +794,7 @@ def block_tickets():
     user_id = get_jwt().get("id")
     data = request.get_json()
     event_id = request.args.get('query', '')
+    discount_code = request.args.get('discount_code', '')
 
     payment_method = data.get("paymentMethod")
     payment_reference = data.get("paymentReference")
@@ -779,11 +802,10 @@ def block_tickets():
     contact_phone = data.get("contactPhoneNumber")
     contact_phone_prefix = data.get("countryCode")
     bank = data.get("bank")
+    
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
-
-    print(f"block-tickets called by user {user_id} with payment_method {payment_method}")
 
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
@@ -893,12 +915,22 @@ def block_tickets():
             except Exception:
                 continue
             # Price -> Decimal, >= 0
-            out.append({"ticket_id_provider": tid_i, "price": str(price)})
+            out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": 0})
             if len(out) >= 200:
                 break
         return out
     
     tickets_payload = clean_tickets(tickets_en_carrito)
+    total_discount = 0
+
+    if discount_code:
+        discount_code = bleach.clean(discount_code.upper(), strip=True)
+        validated_discount = utils.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'block')
+        if not validated_discount["status"]:
+            return jsonify({"message": "Código de descuento inválido"}), 400
+        total_discount = validated_discount['total_discount']
+        tickets_payload = validated_discount['tickets']
+
 
     if not tickets_payload:
         raise ValueError("No hay tickets válidos para bloquear")
@@ -986,7 +1018,7 @@ def block_tickets():
             StatusFinanciamiento='decontado',
             event=event.event_id,
             fee=total_fee,
-            discount=0,
+            discount=total_discount,
             ContactPhoneNumber=full_phone_number
         )
         db.session.add(sale)
@@ -999,11 +1031,11 @@ def block_tickets():
             t.expires_at = None
 
         today = datetime.utcnow().date()
-        MontoBS = int((total_price + total_fee) * customer.BsDExchangeRate / 100)
+        MontoBS = int((total_price + total_fee - total_discount) * customer.BsDExchangeRate / 100)
 
         payment = Payments(
             SaleID=sale.sale_id,
-            Amount=total_price + total_fee,
+            Amount=total_price + total_fee - total_discount,
             PaymentDate=today,
             PaymentMethod=payment_method,
             Reference=payment_reference,
@@ -1035,7 +1067,7 @@ def block_tickets():
             'price': round(sale.price / 100, 2),
             'discount': round(sale.discount / 100, 2),
             'fee': round(sale.fee / 100, 2),
-            'total_abono': round((total_price + sale.fee) / 100, 2),
+            'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
             'payment_method': payment_method.capitalize(),
             'payment_date': today.strftime('%d-%m-%Y'),
             'reference': payment_reference or 'N/A',
@@ -1055,7 +1087,7 @@ def block_tickets():
                 'status': 'pendiente',
                 'title': 'Hemos recibido tu solicitud de pago',
                 'subtitle': 'Un miembro de nuestro equipo te contactará para confirmar los detalles',
-                'due': round((total_price + total_fee) / 100, 2),
+                'due': round((total_price + total_fee - total_discount) / 100, 2),
             })
 
         

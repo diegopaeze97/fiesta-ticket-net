@@ -3156,7 +3156,7 @@ def approve_abono():
             
 
             # Verificar si ya está completamente pagada
-            if payment.sale.paid + payment.sale.discount >= payment.sale.price + payment.sale.fee:
+            if int(round(payment.sale.paid + payment.sale.discount, 2)) >= int(round(payment.sale.price + payment.sale.fee, 2)):
 
                 # ---------------------------------------------------------------
                 # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
@@ -3180,15 +3180,33 @@ def approve_abono():
 
                 payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
                 payment.sale.status = 'pagado' #cambiamos el estado de la venta a aprobado si ya se pagó todo
-                ticket_ids = payment.sale.ticket_ids.split('|') if '|' in payment.sale.ticket_ids else [payment.sale.ticket_ids]
+                # Normalizar y depurar ticket_ids: eliminar items vacíos y no numéricos
+                raw_ticket_ids = payment.sale.ticket_ids or ''
+                raw_list = raw_ticket_ids.split('|') if '|' in raw_ticket_ids else [raw_ticket_ids]
+                ticket_ids = []
+                for tid in raw_list:
+                    tid_str = str(tid).strip()
+                    if not tid_str:
+                        continue
+                    try:
+                        ticket_ids.append(int(tid_str))
+                    except ValueError:
+                        logging.warning(f"Ignorando ticket_id inválido en sale.ticket_ids: {tid_str}")
+                        continue
 
                 total_fee= 0
 
-                for ticket_id in ticket_ids:
-                    if not ticket_id:
-                        continue
+                tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
+                total_price = payment.sale.price
 
-                    ticket = Ticket.query.get(int(ticket_id))
+                if not tickets_a_emitir:
+                    return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
+                
+                if len(tickets_a_emitir) != len(ticket_ids):
+                    return jsonify({'message': 'No se encontraron todos los tickets asociados a la venta', 'status': 'error'}), 400
+                
+                for ticket in tickets_a_emitir:
+
                     if not ticket:
                         return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
 
@@ -3215,6 +3233,10 @@ def approve_abono():
 
                     qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
 
+                    if payment.sale.discount > 0:
+                        proportion = ticket.price / total_price
+                        discount = int(round(payment.sale.discount * proportion, 2))
+
                     sale_data = {
                         'row': ticket.seat.row,
                         'number': ticket.seat.number,
@@ -3224,9 +3246,9 @@ def approve_abono():
                         'date': ticket.event.date_string,
                         'hour': ticket.event.hour_string,
                         'price': round(ticket.price / 100, 2),
-                        'discount': round(ticket.discount / 100, 2),
+                        'discount': round(discount / 100, 2),
                         'fee': round(ticket.fee / 100, 2),
-                        'total': round((ticket.price + ticket.fee - ticket.discount) / 100, 2),
+                        'total': round((ticket.price + ticket.fee - discount) / 100, 2),
                         'link_reserva': qr_link,
                         'localizador': localizador
                     }
@@ -3264,6 +3286,7 @@ def approve_abono():
                 event.total_sales = (event.total_sales or 0) + 1
                 event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
                 event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
+                event.total_discounts = (event.total_discounts or 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0)
 
                 utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
             else:

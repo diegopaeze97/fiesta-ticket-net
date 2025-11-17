@@ -69,7 +69,43 @@
                                     </td>
                                 </tr>
 
-
+                                <tr>
+                                    <td style="padding:0 30px 15px 30px;">
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Datos del Comprador</h3>
+                                        <table width="100%" cellspacing="0" cellpadding="8"
+                                            style="font-size:15px; background-color:#f9f9f9; border-radius:8px;">
+                                            <tr>
+                                                <td style="border-bottom:1px solid #eee;">Nombre:</td>
+                                                <td align="right" style="border-bottom:1px solid #eee;">
+                                                    {{ user_data['full_name'] }}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-bottom:1px solid #eee;">Cédula:</td>
+                                                <td align="right" style="border-bottom:1px solid #eee;">
+                                                    {{ user_data['identification'] }}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-bottom:1px solid #eee;">Teléfono:</td>
+                                                <td align="right" style="border-bottom:1px solid #eee;">
+                                                    {{ user_data['phone'] }}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>Dirección:</td>
+                                                <td align="right">
+                                                    {{ user_data['address'] }}
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
+                                    </td>
+                                </tr>
                                 <tr>
                                     <td style="padding:0 30px 20px 30px;">
                                         <h3 style="color:#333; font-size: 18px;">Detalles del Abono</h3>
@@ -161,12 +197,10 @@
                                             style="font-size: 14px; color: #6a0dad; font-weight: bold; margin-top: 10px;">
                                             FIESTA TICKET
                                         </p>
-                                        <p
-                                            style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                        <p style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
                                             LA MATUNGA, C.A. - J-500318928
                                         </p>
-                                        <p
-                                            style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                        <p style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
                                             Calle Rio Caura, edificio Parque Humbolt, piso 2, ofic. 04
                                             Urb. Parque Humbolt, Caracas, estado Miranda
                                             Zona postal 1080 / Telefono: +58 414 5229768

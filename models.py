@@ -112,6 +112,7 @@ class Event(db.Model):
     total_sales = Column(Integer, default=0) # Ventas netas del evento
     gross_sales = Column(Integer, default=0) # Ventas brutas del evento
     total_fees = Column(Integer, default=0) # Total de fees cobrados en el evento
+    total_discounts = Column(Integer, default=0) # Total de descuentos aplicados en el evento
     liquidado = Column(Integer, default=0) # Monto liquidado a la productora
     duration = Column(String(50)) # Duracion del evento
     clasification = Column(String(50)) # Clasificacion del evento
@@ -256,6 +257,7 @@ class Sales(db.Model):
     ContactPhoneNumber = Column(String(20))  # número de teléfono de contacto para la venta
     liquidado = Column(Boolean, default=False)  # Indica si la venta ha sido liquidada a la productora
     liquidation_id = Column(Integer, ForeignKey('liquidations.LiquidationID'))  # ID de liquidación si aplica
+    discount_ref = Column(Integer, ForeignKey('discounts.DiscountID'), nullable=True)  # referencia al descuento aplicado
 
     # Relaciones
     customer = relationship('EventsUsers', backref='sales')
@@ -264,6 +266,7 @@ class Sales(db.Model):
     tickets = relationship('Ticket', back_populates='sale')
     liquidation = relationship('Liquidations', back_populates='sales')
     payment = relationship('Payments', back_populates='sale', uselist=False)
+    discount_rel = relationship('Discounts', back_populates='sales')
 
 
 class Logs(db.Model):
@@ -338,6 +341,28 @@ class Liquidations(db.Model):
     provider = relationship('Providers', backref='liquidations')
     sales = relationship('Sales', back_populates='liquidation') # Relación con la tabla Sales
 
+class Discounts(db.Model):
+    __tablename__ = 'discounts'
+
+    DiscountID = Column(Integer, primary_key=True)
+    Code = Column(String, nullable=False, unique=True)
+    Description = Column(String)
+    Percentage = Column(Integer, nullable=True)  # porcentaje de descuento
+    FixedAmount = Column(Integer, nullable=True)  # monto fijo de descuento
+    Active = Column(Boolean, default=True)
+    UsageLimit = Column(Integer)  # limite de uso del codigo
+    UsedCount = Column(Integer, default=0)  # contador de usos
+    ValidFrom = Column(DateTime)
+    ValidTo = Column(DateTime)
+    ApplicableEvents = Column(String)  # lista de eventos donde aplica el descuento
+    ApplicableUsers = Column(String)  # lista de usuarios donde aplica el descuento
+
+
+    CreatedAt = Column(DateTime, default=db.func.current_timestamp())
+    CreatedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True)
+
+    sales = relationship('Sales', back_populates='discount_rel')
+    creator = relationship('EventsUsers', backref='created_discounts')
 
 
 
