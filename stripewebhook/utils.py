@@ -2,9 +2,9 @@ from flask import jsonify
 from datetime import timedelta, datetime, timezone
 import logging
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import or_
+from sqlalchemy import update, func
 from extensions import db, stripe, mail, s3
-from models import EventsUsers, Ticket, Seat, Sales, Payments, Logs
+from models import EventsUsers, Ticket, Seat, Sales, Payments, Logs, Discounts, Event
 from flask_mail import Message
 from sqlalchemy.orm import joinedload, load_only
 import requests
@@ -26,6 +26,7 @@ def handle_checkout_completed(data, config):
     user_id = session.get("metadata", {}).get("customer_id")
     tickets_ids_str = session.get("metadata", {}).get("tickets")
     event_id = session.get("metadata", {}).get("event_id")
+    discount_code = session.get("metadata", {}).get("discount_code")
 
     if not user_id or user_id == "None":
         logging.warning("⚠️ No user_id found in metadata for checkout session.")
@@ -143,14 +144,9 @@ def handle_checkout_completed(data, config):
         # 1️⃣ Monto del descuento
         amount_discount = int(session.get("total_details", {}).get("amount_discount", 0))
         total_discount = 0
-        # 2️⃣ Breakdown (si quieres saber exactamente QUÉ CUPÓN se usó)
-        breakdown = (
-            session.get("total_details", {})
-                   .get("breakdown", {})
-                   .get("discounts", [])
-        )
 
         discount_code = session.get("metadata", {}).get("discount_code")
+        logging.info("aplicando codigo de descuento: ", discount_code)
 
         if discount_code and amount_discount > 0:
             validated_discount = utils_eventos.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'block')
@@ -285,22 +281,19 @@ def handle_checkout_completed(data, config):
                 return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
             
             exchangeRate = int(exchangeRate*100)
-            Fee = (event.Fee or 0)/100
 
             for ticket in tickets_en_carrito:
-                discount_without_fee = 0
                 discount = 0
 
                 if total_discount > 0:
                     proportion = ticket.price / total_price
                     discount = int(round(total_discount * proportion, 2))
-                    discount_without_fee = discount / (1 + Fee)
 
 
                 ticket.status = 'pagado'
                 ticket.availability_status = 'Listo para canjear'
                 ticket.emission_date = datetime.now().date()
-                ticket.discount = discount_without_fee
+                ticket.discount = discount
 
                 log_for_emision = Logs(
                     UserID=user_id,
@@ -340,8 +333,8 @@ def handle_checkout_completed(data, config):
                 utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
 
             IVA = config.get('IVA_PERCENTAGE', 0) / 100
-            amount_with_IVA = received * IVA / (1 + IVA)
-            IVA_amount = received - amount_with_IVA
+            IVA_amount = int(round(received * IVA , 2)/ 100)
+            amount_no_IVA = received - IVA_amount
 
             sale_data = {
                 'sale_id': str(payment.sale.sale_id),
@@ -351,7 +344,7 @@ def handle_checkout_completed(data, config):
                 'hour': payment.sale.event_rel.hour_string,
                 'price': round(payment.sale.price*exchangeRate / 10000, 2),
                 'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
-                'net_amount': round(amount_with_IVA*exchangeRate / 10000, 2),
+                'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
                 'total_abono': round(received*exchangeRate / 10000, 2),
                 'payment_method': 'Tarjeta de Crédito',
                 'payment_date': today.strftime('%d-%m-%Y'),
@@ -365,23 +358,58 @@ def handle_checkout_completed(data, config):
             }
             utils_eventos.sendnotification_for_CompletedPaymentStatus(config, db, mail, customer, Tickets, sale_data)
 
-            # Actualizar métricas del evento
-            event.total_sales = (event.total_sales or 0) + 1
-            event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
-            event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
-            event.total_discounts = (event.total_discounts or 0) + (int(amount_discount) if amount_discount is not None else 0)
+            discount_code = discount_code.upper() if discount_code else None
 
+            if discount_code:
+                discount = Discounts.query.filter(Discounts.Code == discount_code).one_or_none()
+
+            if discount:
+                # Actualizar uso del descuento
+                discount.UsedCount = (discount.UsedCount or 0) + 1
+                sale.discount_ref = discount.DiscountID
+
+        try:
+        # Actualizar métricas del evento
+            stmt = (
+                update(Event)
+                .where(Event.event_id == int(event_id))
+                .values(
+                    total_sales = func.coalesce(Event.total_sales, 0) + 1,
+                    gross_sales = func.coalesce(Event.gross_sales, 0) + (int(received) if received is not None else 0),
+                    total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
+                    total_discounts = func.coalesce(Event.total_discounts, 0) + (int(amount_discount) if amount_discount is not None else 0),
+                    total_discounts_tickera = (
+                        func.coalesce(Event.total_discounts_tickera, 0)
+                        + ((func.coalesce(Event.Fee, 0) * int(amount_discount) / 100) if amount_discount is not None else 0)
+                    )
+                )
+                .returning(Event.event_id)  # opcional, útil para confirmar
+            )
+
+            db.session.execute(stmt)
+
+        except Exception as e:
+            # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+            logging.error(f"Error al actualizar métricas del evento: {e}")
+            db.session.rollback() 
+            sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
+            return {"error": f"Fallo al actualizar DB: {e}"}, 500
+        
         db.session.commit()
-
+        logging.info(f"✅ Successfully processed checkout.session.completed for user {user_id}, sale ID {sale.sale_id}")
+        
         return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "ok"}), 200
 
     except SQLAlchemyError as e:
         db.session.rollback()
         sendnotification_checkout_failed(config, db, mail, customer, Tickets, event, session)
         logging.error(f"❌ Database error processing checkout.session.completed for user {user_id}: {e}", exc_info=True)
+        return jsonify({"message": "Error de base de datos"}), 500
     except Exception as e:
+        db.session.rollback() 
         sendnotification_checkout_failed(config, db, mail, customer, Tickets, event, session)
         logging.error(f"❌ Unexpected error in handle_checkout_completed for user {user_id}: {e}", exc_info=True)
+        return jsonify({"message": "Error inesperado"}), 500
 
 
 def sendnotification_checkout_failed(config, db, mail, user, Tickets, event, session):

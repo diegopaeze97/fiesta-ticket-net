@@ -113,6 +113,7 @@ class Event(db.Model):
     gross_sales = Column(Integer, default=0) # Ventas brutas del evento
     total_fees = Column(Integer, default=0) # Total de fees cobrados en el evento
     total_discounts = Column(Integer, default=0) # Total de descuentos aplicados en el evento
+    total_discounts_tickera = Column(Integer, default=0) #Total de descuentos que asume la tickera
     liquidado = Column(Integer, default=0) # Monto liquidado a la productora
     duration = Column(String(50)) # Duracion del evento
     clasification = Column(String(50)) # Clasificacion del evento

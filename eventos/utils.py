@@ -183,6 +183,16 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         msg.html = msg_html
 
         mail.send(msg)
+
+        subject_admin = f'Notificación de compra completada para {sale_data["event"]} - Fiesta Ticket'
+
+        msg = Message(subject_admin, sender=config["MAIL_USERNAME"], recipients=[config["MAIL_USERNAME"]])
+        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
+        msg.html = msg_html
+
+        mail.send(msg)
+
+
     except Exception as e:
         logging.error(f"Error sending email: {e}")
         db.session.rollback()   
@@ -269,6 +279,8 @@ def validate_discount_code(discount_code, customer, event_details, tickets_en_ca
 
     if not discount_code:
         return 0, None  # No hay código de descuento
+    
+    discount_code = discount_code.strip().upper()
 
     # Use filter_by to avoid passing a tuple into filter() and get a single matching discount
     discount = Discounts.query.filter_by(Code=discount_code).one_or_none()
@@ -341,12 +353,12 @@ def validate_discount_code(discount_code, customer, event_details, tickets_en_ca
         
         if num_tickets > 0:
             for ticket in tickets_en_carrito:
-                discount_per_ticket = int(round((ticket["price"] / total_price) * total_discount, 2))
+                discount_per_ticket = int(round((ticket["price"] / total_price) * total_discount * (100 - event_details.Fee)/100, 2))
                 ticket["discount"] = discount_per_ticket
     else:
         return {"status": False, "message": "Código de descuento inválido"}
 
-    return {"total_discount": total_discount, "tickets": tickets, "status": True, "message": "Código de descuento aplicado exitosamente"}
+    return {"total_discount": total_discount, "tickets": tickets, "status": True, "message": "Código de descuento aplicado exitosamente", "discount_id": discount.DiscountID}
     
 email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format

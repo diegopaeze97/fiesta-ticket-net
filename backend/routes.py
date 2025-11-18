@@ -1,20 +1,20 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app, g
-from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
+from flask import request, jsonify, Blueprint, make_response, session, current_app
+from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers, EventUserAccess
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
 from sqlalchemy.orm import joinedload, load_only
-from sqlalchemy import and_, or_, func, case
+from sqlalchemy import and_, or_, func, case, update
 import os
 import bleach
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import eventos.utils as utils
 from extensions import mail
-from decorators.utils import optional_roles, roles_required
+from decorators.utils import roles_required
 import signup.utils as signup_utils
 import eventos.utils_whatsapp as WA_utils
 import requests
@@ -3151,6 +3151,7 @@ def approve_abono():
             payment.PaymentDate = payment_date
             payment.Reference = PaymentReference
             payment.sale.paid += received
+            
 
             reserva_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
             
@@ -3176,6 +3177,15 @@ def approve_abono():
                     return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
                 
                 exchangeRate = int(exchangeRate*100)
+
+                if payment.sale.discount > 0:
+                    discount_ref = payment.sale.discount_ref
+                    if discount_ref:
+                        discount = Discounts.query.filter(Discounts.DiscountID == discount_ref).first()
+                        if discount:
+                            discount.UsedCount = (discount.UsedCount or 0) + 1
+                            payment.sale.discount_ref = discount.DiscountID
+
 
 
                 payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
@@ -3209,7 +3219,15 @@ def approve_abono():
 
                     if not ticket:
                         return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
+                    
+                    discount = 0
 
+                    if payment.sale.discount > 0:
+                        proportion = ticket.price / total_price
+                        discount = int(round(payment.sale.discount * proportion, 2))
+
+                    
+                    ticket.discount = discount
                     ticket.status = 'pagado'
                     ticket.availability_status = 'Listo para canjear'
                     ticket.emission_date = datetime.now().date()
@@ -3232,11 +3250,6 @@ def approve_abono():
                     ticket.saleLocator = localizador
 
                     qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
-                    discount = 0
-
-                    if payment.sale.discount > 0:
-                        proportion = ticket.price / total_price
-                        discount = int(round(payment.sale.discount * proportion, 2))
 
                     sale_data = {
                         'row': ticket.seat.row,
@@ -3259,8 +3272,8 @@ def approve_abono():
                     utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                amount_with_IVA = int(received * IVA / (1 + IVA))
-                IVA_amount = received - amount_with_IVA
+                IVA_amount = int(round(received * IVA / 100, 2))
+                amount_no_IVA = received - IVA_amount
 
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
@@ -3270,7 +3283,7 @@ def approve_abono():
                     'hour': payment.sale.event_rel.hour_string,
                     'price': round(payment.sale.price*exchangeRate / 10000, 2),
                     'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
-                    'net_amount': round(amount_with_IVA*exchangeRate / 10000, 2),
+                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
                     'total_abono': round(received*exchangeRate / 10000, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
@@ -3283,11 +3296,31 @@ def approve_abono():
                     'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
                 }
 
-                # Actualizar métricas del evento (asegurar que None se trate como 0)
-                event.total_sales = (event.total_sales or 0) + 1
-                event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
-                event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
-                event.total_discounts = (event.total_discounts or 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0)
+                try:
+                # Actualizar métricas del evento
+                    stmt = (
+                        update(Event)
+                        .where(Event.event_id == int(event.event_id))
+                        .values(
+                            total_sales = func.coalesce(Event.total_sales, 0) + 1,
+                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(received) if received is not None else 0),
+                            total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
+                            total_discounts = func.coalesce(Event.total_discounts, 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0),
+                            total_discounts_tickera = (
+                                func.coalesce(Event.total_discounts_tickera, 0)
+                                + ((func.coalesce(Event.Fee, 0) * int(payment.sale.discount) / 100) if payment.sale.discount is not None else 0)
+                            )
+                        )
+                        .returning(Event.event_id)  # opcional, útil para confirmar
+                    )
+
+                    db.session.execute(stmt)
+
+                except Exception as e:
+                    # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+                    logging.error(f"Error al actualizar métricas del evento: {e}")
+                    db.session.rollback() 
+                    return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
                 utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
             else:
