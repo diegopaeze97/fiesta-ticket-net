@@ -98,4 +98,26 @@ en el que el usuario haya aplicado el codigo, haga el pago y este justamente se 
 4. Se actualiza status del ticket: pagado, pendiente pago o pagado por verificar segun aplique
 
 
+# Modificaciones en el calculo del descuento en la generacion del ticket
+File: backend/routes.py
+
+la propiedad .discount
+
+* Existe en los modelos Sales y Ticket
+* Se almacena en centavos (int)
+* Incluye el total de los descuentos aplicados, es decir, precio base + fee de servicio
+Ejm:
+
+Precio base: 80$
+Fee de servicio: 20$
+Descuento aplicado: 20%
+
+Descuento total almacenado en .discount: 20$ (16$ del precio base + 4$ del fee de servicio)
+
+HAY QUE TENER CUIDADO:
+* Al mostrar el descuento en la interfaz de usuario, se debe mostrar el valor total almacenado en .discount
+* Al calcular el total a pagar, se debe restar el valor almacenado en .discount
+
+
+
 

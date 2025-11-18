@@ -1,12 +1,8 @@
 from flask import render_template
-import qrcode
 from io import BytesIO
 from flask_mail import Message
 from extensions import db, mail
 import logging
-import uuid
-import re
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from weasyprint import HTML, CSS
 import os

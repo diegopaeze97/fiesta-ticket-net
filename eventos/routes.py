@@ -350,23 +350,25 @@ def buy_tickets():
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
         # ---------------------------------------------------------------
-        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+        get_bs_exchange_rate = utils.get_exchange_rate_bsd()
+        # Validar respuesta y extraer la tasa de cambio de forma robusta
+        raw_rate = None
+        message = None
+        if isinstance(get_bs_exchange_rate, dict):
+            raw_rate = get_bs_exchange_rate.get('exchangeRate')
+            message = get_bs_exchange_rate.get('message')
+        # Rechazar si no hay tasa o la tasa es cero (no válida)
+        if raw_rate is None or raw_rate == 0:
+            db.session.rollback()
+            return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+        try:
+            BsDexchangeRate = int(raw_rate)
+        except Exception:
+            db.session.rollback()
+            return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
-        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-        exchangeRate = 0
 
-        if response_exchange.status_code != 200:
-            logging.error(response_exchange.status_code)
-            return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-        exchange_data = response_exchange.json()
-        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-            return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-
-        # le asignamos la tasa de cambio ACTUAL al usuario 
-        customer.BsDExchangeRate = int(exchangeRate*100)
-
+        customer.BsDExchangeRate = int(BsDexchangeRate)
         # ---------------------------------------------------------------
         # 4️⃣ Validar tickets disponibles en sistema
         # ---------------------------------------------------------------
@@ -611,6 +613,7 @@ def buy_tickets():
             Ticket.status: 'disponible',
             Ticket.customer_id: None,
             Ticket.fee: 0,
+            Ticket.discount: 0,
             Ticket.expires_at: None
         }, synchronize_session=False)
 
@@ -922,6 +925,7 @@ def block_tickets():
     
     tickets_payload = clean_tickets(tickets_en_carrito)
     total_discount = 0
+    discount_id = None
 
     if discount_code:
         discount_code = bleach.clean(discount_code.upper(), strip=True)
@@ -930,6 +934,7 @@ def block_tickets():
             return jsonify({"message": "Código de descuento inválido"}), 400
         total_discount = validated_discount['total_discount']
         tickets_payload = validated_discount['tickets']
+        discount_id = validated_discount['discount_id']
 
 
     if not tickets_payload:
@@ -1019,7 +1024,8 @@ def block_tickets():
             event=event.event_id,
             fee=total_fee,
             discount=total_discount,
-            ContactPhoneNumber=full_phone_number
+            ContactPhoneNumber=full_phone_number,
+            discount_ref=discount_id
         )
         db.session.add(sale)
         db.session.flush()
@@ -1295,7 +1301,7 @@ def ticket():
                 'ticket_status': 'valid'
             }
 
-            fee = ticket.fee if ticket.fee else 0 if ticket.fee else 0
+            fee = ticket.fee if ticket.fee else 0 
             discount = round(ticket.discount, 2) if ticket.discount else 0
 
             # si tiene rol permitido, añade info adicional
@@ -1583,16 +1589,10 @@ def create_stripe_checkout_session():
             "customer_id": str(user_id),
             "tickets": str(tickets_ids),
             "event_id": str(event_id),
+            "discount_code": discount_code if discount_code else None
         }
 
         # Añadir discount_code solo si total_discount != 0 y discount_code no está vacío
-        try:
-            has_discount = float(total_discount) != 0.0
-        except Exception:
-            has_discount = bool(total_discount)
-
-        if discount_code and has_discount:
-            metadata["discount_code"] = discount_code
 
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],

@@ -1,20 +1,20 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app, g
-from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
+from flask import request, jsonify, Blueprint, make_response, session, current_app
+from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt, Providers, EventUserAccess
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
 from sqlalchemy.orm import joinedload, load_only
-from sqlalchemy import and_, or_, func, case
+from sqlalchemy import and_, or_, func, case, update
 import os
 import bleach
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 import eventos.utils as utils
 from extensions import mail
-from decorators.utils import optional_roles, roles_required
+from decorators.utils import roles_required
 import signup.utils as signup_utils
 import eventos.utils_whatsapp as WA_utils
 import requests
@@ -1130,7 +1130,22 @@ def load_sales():
         sales_info['total_paid_sales'] = total_paid_sales
         sales_info['total_pending_sales'] = total_pending_sales
 
-        return jsonify({"unique_events": list(events_dict.values()), "events": all_events, "sales": sales_data, "status": "ok", "dashboard_data": sales_info}), 200
+        #por ultimo, recopilamos loa lista de cupones aplicables
+        discounts = Discounts.query.filter(Discounts.Active == True, Discounts.ApplicableUsers == None).all()
+        discounts_list = []
+
+        if discounts:
+            for discount in discounts:
+                discounts_list.append({
+                    'discount_id': discount.DiscountID,
+                    'code': discount.Code,
+                    'description': discount.Description,
+                    'fixed_amount': discount.FixedAmount if discount.FixedAmount else 0,
+                    'percentage': discount.Percentage if discount.Percentage else 0,
+                    'aplicable_events': discount.ApplicableEvents,
+                })
+
+        return jsonify({"unique_events": list(events_dict.values()), "events": all_events, "sales": sales_data, "status": "ok", "dashboard_data": sales_info, "coupons": discounts_list}), 200
 
 
     except Exception as e:
@@ -1831,22 +1846,22 @@ def load_available_tickets():
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
         # ---------------------------------------------------------------
-        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
-
-        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-        exchangeRate = 0
-
-        if response_exchange.status_code != 200:
-            logging.error(response_exchange.status_code)
-            return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-        exchange_data = response_exchange.json()
-        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-            return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-
-        # le asignamos la tasa de cambio ACTUAL al usuario 
-        BsDExchangeRate = int(exchangeRate*100)
+        get_bs_exchange_rate = utils.get_exchange_rate_bsd()
+        # Validar respuesta y extraer la tasa de cambio de forma robusta
+        raw_rate = None
+        message = None
+        if isinstance(get_bs_exchange_rate, dict):
+            raw_rate = get_bs_exchange_rate.get('exchangeRate')
+            message = get_bs_exchange_rate.get('message')
+        # Rechazar si no hay tasa o la tasa es cero (no válida)
+        if raw_rate is None or raw_rate == 0:
+            db.session.rollback()
+            return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+        try:
+            BsDexchangeRate = int(raw_rate)
+        except Exception:
+            db.session.rollback()
+            return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
         # ---------------------------------------------------------------
         # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
@@ -1962,7 +1977,8 @@ def load_available_tickets():
         return jsonify({
             "tickets": tickets_list,
             "fee": event.Fee,
-            "BsDExchangeRate": BsDExchangeRate,
+            "event_id": event.event_id,
+            "BsDExchangeRate": BsDexchangeRate,
             "status": "ok"
         }), 200
 
@@ -2352,6 +2368,7 @@ def block_tickets():
     date = request.json.get('PaymentDate')
     cedula = request.json.get('cedula', '').strip()
     address = bleach.clean(request.json.get('shortAddress', ''), strip=True)
+    discount_code = bleach.clean(request.json.get('discount_code', ''), strip=True)
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -2376,8 +2393,6 @@ def block_tickets():
         return jsonify({"message": "Cédula no válida"}), 400
     
     cedula =cedula.upper()
-    
-
 
     # ----------------------------------------------------------------
     # 2️⃣ Validar información del pago
@@ -2385,7 +2400,6 @@ def block_tickets():
     full_phone_number = None
 
     if not all([contact_phone, contact_phone_prefix]):
-        print(contact_phone, contact_phone_prefix)
         return jsonify({"message": "Complete todos los campos requeridos"}), 400
 
     full_phone_number = f"{contact_phone_prefix}{contact_phone}".replace("+", "").replace(" ", "").replace("-", "")
@@ -2458,12 +2472,24 @@ def block_tickets():
             except Exception:
                 continue
             # Price -> Decimal, >= 0
-            out.append({"ticket_id_provider": tid_i, "price": str(price)})
+            out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": str(0)})
             if len(out) >= 200:
                 break
         return out
-    
-    tickets_payload = clean_tickets(tickets_en_carrito)
+
+    total_discount = 0
+    discount_id = None
+
+    if discount_code:
+        discount_code = bleach.clean(discount_code.upper(), strip=True)
+        validated_discount = utils.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'block')
+        if not validated_discount["status"]:
+            return jsonify({"message": "Código de descuento inválido"}), 400
+        total_discount = validated_discount['total_discount']
+        tickets_payload = validated_discount['tickets']
+        discount_id = validated_discount['discount_id']
+    else:
+        tickets_payload = clean_tickets(tickets_en_carrito)
 
     if not tickets_payload:
         raise ValueError("No hay tickets válidos para bloquear")
@@ -2550,9 +2576,10 @@ def block_tickets():
             StatusFinanciamiento='decontado',
             event=event.event_id,
             fee=total_fee,
-            discount=0,
             ContactPhoneNumber=full_phone_number,
-            creation_date=date
+            creation_date=date,
+            discount=total_discount,
+            discount_ref=discount_id
         )
         db.session.add(sale)
         db.session.flush()
@@ -2570,7 +2597,7 @@ def block_tickets():
 
         payment = Payments(
             SaleID=sale.sale_id,
-            Amount=total_price + total_fee,
+            Amount=total_price + total_fee - total_discount,
             PaymentDate=today,
             PaymentMethod=payment_method,
             Reference=payment_reference,
@@ -2599,7 +2626,7 @@ def block_tickets():
             'price': round(sale.price / 10000, 2),
             'discount': round(sale.discount / 100, 2),
             'fee': round(sale.fee / 10000, 2),
-            'total_abono': round((total_price + sale.fee) / 100, 2),
+            'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
             'due': round(0, 2),
             'payment_method': payment_method.capitalize(),
             'payment_date': today.strftime('%d-%m-%Y'),
@@ -3151,6 +3178,7 @@ def approve_abono():
             payment.PaymentDate = payment_date
             payment.Reference = PaymentReference
             payment.sale.paid += received
+            
 
             reserva_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={payment.sale.saleLink}'
             
@@ -3161,21 +3189,32 @@ def approve_abono():
                 # ---------------------------------------------------------------
                 # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
                 # ---------------------------------------------------------------
-                url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+                get_bs_exchange_rate = utils.get_exchange_rate_bsd()
 
-                response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-                exchangeRate = 0
+                # Validar respuesta y extraer la tasa de cambio de forma robusta
+                raw_rate = None
+                message = None
+                if isinstance(get_bs_exchange_rate, dict):
+                    raw_rate = get_bs_exchange_rate.get('exchangeRate')
+                    message = get_bs_exchange_rate.get('message')
+                # Rechazar si no hay tasa o la tasa es cero (no válida)
+                if raw_rate is None or raw_rate == 0:
+                    db.session.rollback()
+                    return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+                try:
+                    exchangeRate = int(raw_rate)
+                except Exception:
+                    db.session.rollback()
+                    return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
-                if response_exchange.status_code != 200:
-                    logging.error(response_exchange.status_code)
-                    return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-                exchange_data = response_exchange.json()
-                exchangeRate = exchange_data.get("current", {}).get("usd", 0)
+                if payment.sale.discount > 0:
+                    discount_ref = payment.sale.discount_ref
+                    if discount_ref:
+                        discount = Discounts.query.filter(Discounts.DiscountID == discount_ref).first()
+                        if discount:
+                            discount.UsedCount = (discount.UsedCount or 0) + 1
+                            payment.sale.discount_ref = discount.DiscountID
 
-                if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-                    return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-                
-                exchangeRate = int(exchangeRate*100)
 
 
                 payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
@@ -3209,7 +3248,15 @@ def approve_abono():
 
                     if not ticket:
                         return jsonify({'message': 'No se encontró el ticket asociado', 'status': 'error'}), 400
+                    
+                    discount = 0
 
+                    if payment.sale.discount > 0:
+                        proportion = ticket.price / total_price
+                        discount = int(round(payment.sale.discount * proportion, 2))
+
+                    
+                    ticket.discount = discount
                     ticket.status = 'pagado'
                     ticket.availability_status = 'Listo para canjear'
                     ticket.emission_date = datetime.now().date()
@@ -3232,11 +3279,6 @@ def approve_abono():
                     ticket.saleLocator = localizador
 
                     qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
-                    discount = 0
-
-                    if payment.sale.discount > 0:
-                        proportion = ticket.price / total_price
-                        discount = int(round(payment.sale.discount * proportion, 2))
 
                     sale_data = {
                         'row': ticket.seat.row,
@@ -3259,8 +3301,8 @@ def approve_abono():
                     utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                amount_with_IVA = int(received * IVA / (1 + IVA))
-                IVA_amount = received - amount_with_IVA
+                IVA_amount = int(round(received * IVA / 100, 2))
+                amount_no_IVA = received - IVA_amount
 
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
@@ -3270,7 +3312,7 @@ def approve_abono():
                     'hour': payment.sale.event_rel.hour_string,
                     'price': round(payment.sale.price*exchangeRate / 10000, 2),
                     'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
-                    'net_amount': round(amount_with_IVA*exchangeRate / 10000, 2),
+                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
                     'total_abono': round(received*exchangeRate / 10000, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
@@ -3283,11 +3325,31 @@ def approve_abono():
                     'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
                 }
 
-                # Actualizar métricas del evento (asegurar que None se trate como 0)
-                event.total_sales = (event.total_sales or 0) + 1
-                event.gross_sales = (event.gross_sales or 0) + (int(received) if received is not None else 0)
-                event.total_fees = (event.total_fees or 0) + (int(total_fee) if total_fee is not None else 0)
-                event.total_discounts = (event.total_discounts or 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0)
+                try:
+                # Actualizar métricas del evento
+                    stmt = (
+                        update(Event)
+                        .where(Event.event_id == int(event.event_id))
+                        .values(
+                            total_sales = func.coalesce(Event.total_sales, 0) + 1,
+                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(received) if received is not None else 0),
+                            total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
+                            total_discounts = func.coalesce(Event.total_discounts, 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0),
+                            total_discounts_tickera = (
+                                func.coalesce(Event.total_discounts_tickera, 0)
+                                + ((func.coalesce(Event.Fee, 0) * int(payment.sale.discount) / 100) if payment.sale.discount is not None else 0)
+                            )
+                        )
+                        .returning(Event.event_id)  # opcional, útil para confirmar
+                    )
+
+                    db.session.execute(stmt)
+
+                except Exception as e:
+                    # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+                    logging.error(f"Error al actualizar métricas del evento: {e}")
+                    db.session.rollback() 
+                    return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
                 utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
             else:

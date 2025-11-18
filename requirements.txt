@@ -30,3 +30,4 @@ python-dateutil==2.9.0.post0
 gunicorn==23.0.0
 stripe==13.0.1
 weasyprint==66.0
+pycryptodome==3.23.0
