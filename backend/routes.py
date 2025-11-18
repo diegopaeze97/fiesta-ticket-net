@@ -1130,7 +1130,22 @@ def load_sales():
         sales_info['total_paid_sales'] = total_paid_sales
         sales_info['total_pending_sales'] = total_pending_sales
 
-        return jsonify({"unique_events": list(events_dict.values()), "events": all_events, "sales": sales_data, "status": "ok", "dashboard_data": sales_info}), 200
+        #por ultimo, recopilamos loa lista de cupones aplicables
+        discounts = Discounts.query.filter(Discounts.Active == True, Discounts.ApplicableUsers == None).all()
+        discounts_list = []
+
+        if discounts:
+            for discount in discounts:
+                discounts_list.append({
+                    'discount_id': discount.DiscountID,
+                    'code': discount.Code,
+                    'description': discount.Description,
+                    'fixed_amount': discount.FixedAmount if discount.FixedAmount else 0,
+                    'percentage': discount.Percentage if discount.Percentage else 0,
+                    'aplicable_events': discount.ApplicableEvents,
+                })
+
+        return jsonify({"unique_events": list(events_dict.values()), "events": all_events, "sales": sales_data, "status": "ok", "dashboard_data": sales_info, "coupons": discounts_list}), 200
 
 
     except Exception as e:
@@ -1962,6 +1977,7 @@ def load_available_tickets():
         return jsonify({
             "tickets": tickets_list,
             "fee": event.Fee,
+            "event_id": event.event_id,
             "BsDExchangeRate": BsDexchangeRate,
             "status": "ok"
         }), 200
@@ -2352,6 +2368,7 @@ def block_tickets():
     date = request.json.get('PaymentDate')
     cedula = request.json.get('cedula', '').strip()
     address = bleach.clean(request.json.get('shortAddress', ''), strip=True)
+    discount_code = bleach.clean(request.json.get('discount_code', ''), strip=True)
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -2376,8 +2393,6 @@ def block_tickets():
         return jsonify({"message": "Cédula no válida"}), 400
     
     cedula =cedula.upper()
-    
-
 
     # ----------------------------------------------------------------
     # 2️⃣ Validar información del pago
@@ -2385,7 +2400,6 @@ def block_tickets():
     full_phone_number = None
 
     if not all([contact_phone, contact_phone_prefix]):
-        print(contact_phone, contact_phone_prefix)
         return jsonify({"message": "Complete todos los campos requeridos"}), 400
 
     full_phone_number = f"{contact_phone_prefix}{contact_phone}".replace("+", "").replace(" ", "").replace("-", "")
@@ -2458,12 +2472,24 @@ def block_tickets():
             except Exception:
                 continue
             # Price -> Decimal, >= 0
-            out.append({"ticket_id_provider": tid_i, "price": str(price)})
+            out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": str(0)})
             if len(out) >= 200:
                 break
         return out
-    
-    tickets_payload = clean_tickets(tickets_en_carrito)
+
+    total_discount = 0
+    discount_id = None
+
+    if discount_code:
+        discount_code = bleach.clean(discount_code.upper(), strip=True)
+        validated_discount = utils.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'block')
+        if not validated_discount["status"]:
+            return jsonify({"message": "Código de descuento inválido"}), 400
+        total_discount = validated_discount['total_discount']
+        tickets_payload = validated_discount['tickets']
+        discount_id = validated_discount['discount_id']
+    else:
+        tickets_payload = clean_tickets(tickets_en_carrito)
 
     if not tickets_payload:
         raise ValueError("No hay tickets válidos para bloquear")
@@ -2550,9 +2576,10 @@ def block_tickets():
             StatusFinanciamiento='decontado',
             event=event.event_id,
             fee=total_fee,
-            discount=0,
             ContactPhoneNumber=full_phone_number,
-            creation_date=date
+            creation_date=date,
+            discount=total_discount,
+            discount_ref=discount_id
         )
         db.session.add(sale)
         db.session.flush()
@@ -2570,7 +2597,7 @@ def block_tickets():
 
         payment = Payments(
             SaleID=sale.sale_id,
-            Amount=total_price + total_fee,
+            Amount=total_price + total_fee - total_discount,
             PaymentDate=today,
             PaymentMethod=payment_method,
             Reference=payment_reference,
@@ -2599,7 +2626,7 @@ def block_tickets():
             'price': round(sale.price / 10000, 2),
             'discount': round(sale.discount / 100, 2),
             'fee': round(sale.fee / 10000, 2),
-            'total_abono': round((total_price + sale.fee) / 100, 2),
+            'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
             'due': round(0, 2),
             'payment_method': payment_method.capitalize(),
             'payment_date': today.strftime('%d-%m-%Y'),

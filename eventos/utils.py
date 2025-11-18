@@ -368,7 +368,7 @@ def get_exchange_rate_bsd():
 
         response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
 
-        if response_exchange.status_code != 200:
+        if response_exchange.status_code != 205:
             logging.error(response_exchange.status_code)
             #temporalmente mientras se arregla cloudFlare
             return {"exchangeRate": 23684}

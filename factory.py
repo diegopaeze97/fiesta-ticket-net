@@ -10,6 +10,7 @@ from backend.routes import backend
 from stripewebhook.routes import stripewebhook
 from providers.routes import providers
 from api.routes import api
+from vol_api.testing import vol
 from extensions import jwt, db, socketio, mail # para importar flask_jwt_extended, db, jwt, SQLAlchemy
 from models import Revoked_tokens
 from flask_cors import CORS
@@ -70,6 +71,15 @@ def createApp():
     #stripe
     app.config['STRIPE_SECRET_KEY'] = os.getenv('STRIPE_SECRET_KEY')
     app.config['STRIPE_WEBHOOK_SECRET_KEY'] = os.getenv('STRIPE_WEBHOOK_SECRET_KEY')
+
+    #venezolano de credito
+    app.config['BANK_IV'] = os.getenv('BANK_IV')
+    app.config['BANK_KEY'] = os.getenv('BANK_KEY')
+    app.config['BANK_HS'] = os.getenv('BANK_HS')
+    app.config['BANK_TEST_URL'] = os.getenv('BANK_TEST_URL')
+    app.config['BANK_PROD_URL'] = os.getenv('BANK_PROD_URL')
+    app.config['USE_PRODUCTION'] = os.getenv('USE_PRODUCTION', 'false').lower() == 'true'
+    app.config['REQUEST_TIMEOUT'] = int(os.getenv('REQUEST_TIMEOUT', '30'))
 
     db.init_app(app)
     jwt.init_app(app)
@@ -143,5 +153,6 @@ def createApp():
     app.register_blueprint(users, url_prefix='/users')
     app.register_blueprint(stripewebhook, url_prefix='/stripewebhook')
     app.register_blueprint(api, url_prefix='/api')
+    app.register_blueprint(vol, url_prefix='/vol')
 
     return app
