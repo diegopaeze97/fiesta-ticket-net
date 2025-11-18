@@ -1831,22 +1831,22 @@ def load_available_tickets():
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
         # ---------------------------------------------------------------
-        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
-
-        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-        exchangeRate = 0
-
-        if response_exchange.status_code != 200:
-            logging.error(response_exchange.status_code)
-            return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-        exchange_data = response_exchange.json()
-        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-            return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-
-        # le asignamos la tasa de cambio ACTUAL al usuario 
-        BsDExchangeRate = int(exchangeRate*100)
+        get_bs_exchange_rate = utils.get_exchange_rate_bsd()
+        # Validar respuesta y extraer la tasa de cambio de forma robusta
+        raw_rate = None
+        message = None
+        if isinstance(get_bs_exchange_rate, dict):
+            raw_rate = get_bs_exchange_rate.get('exchangeRate')
+            message = get_bs_exchange_rate.get('message')
+        # Rechazar si no hay tasa o la tasa es cero (no válida)
+        if raw_rate is None or raw_rate == 0:
+            db.session.rollback()
+            return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+        try:
+            BsDexchangeRate = int(raw_rate)
+        except Exception:
+            db.session.rollback()
+            return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
         # ---------------------------------------------------------------
         # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
@@ -1962,7 +1962,7 @@ def load_available_tickets():
         return jsonify({
             "tickets": tickets_list,
             "fee": event.Fee,
-            "BsDExchangeRate": BsDExchangeRate,
+            "BsDExchangeRate": BsDexchangeRate,
             "status": "ok"
         }), 200
 
@@ -3162,21 +3162,23 @@ def approve_abono():
                 # ---------------------------------------------------------------
                 # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
                 # ---------------------------------------------------------------
-                url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+                get_bs_exchange_rate = utils.get_exchange_rate_bsd()
 
-                response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-                exchangeRate = 0
-
-                if response_exchange.status_code != 200:
-                    logging.error(response_exchange.status_code)
-                    return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-                exchange_data = response_exchange.json()
-                exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-                if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
-                    return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-                
-                exchangeRate = int(exchangeRate*100)
+                # Validar respuesta y extraer la tasa de cambio de forma robusta
+                raw_rate = None
+                message = None
+                if isinstance(get_bs_exchange_rate, dict):
+                    raw_rate = get_bs_exchange_rate.get('exchangeRate')
+                    message = get_bs_exchange_rate.get('message')
+                # Rechazar si no hay tasa o la tasa es cero (no válida)
+                if raw_rate is None or raw_rate == 0:
+                    db.session.rollback()
+                    return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+                try:
+                    exchangeRate = int(raw_rate)
+                except Exception:
+                    db.session.rollback()
+                    return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
                 if payment.sale.discount > 0:
                     discount_ref = payment.sale.discount_ref

@@ -264,23 +264,24 @@ def handle_checkout_completed(data, config):
             # ---------------------------------------------------------------
             # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
             # ---------------------------------------------------------------
-            url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
-
-            response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
-            exchangeRate = 0
-
-            if response_exchange.status_code != 200:
-                logging.error(response_exchange.status_code)
+            get_bs_exchange_rate = utils_eventos.get_exchange_rate_bsd()
+            # Validar respuesta y extraer la tasa de cambio de forma robusta
+            raw_rate = None
+            message = None
+            if isinstance(get_bs_exchange_rate, dict):
+                raw_rate = get_bs_exchange_rate.get('exchangeRate')
+                message = get_bs_exchange_rate.get('message')
+            # Rechazar si no hay tasa o la tasa es cero (no válida)
+            if raw_rate is None or raw_rate == 0:
+                db.session.rollback()
                 sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
-                return jsonify({"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}), 500
-            exchange_data = response_exchange.json()
-            exchangeRate = exchange_data.get("current", {}).get("usd", 0)
-
-            if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
+                return jsonify({'message': message or 'error desconocido al intentar obtener la tasa de cambio', 'status': 'error'}), 500
+            try:
+                BsDexchangeRate = int(raw_rate)
+            except Exception:
                 sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
-                return jsonify({"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}), 500
-            
-            exchangeRate = int(exchangeRate*100)
+                db.session.rollback()
+                return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
             for ticket in tickets_en_carrito:
                 discount = 0
@@ -342,16 +343,16 @@ def handle_checkout_completed(data, config):
                 'venue': payment.sale.event_rel.venue.name,
                 'date': payment.sale.event_rel.date_string,
                 'hour': payment.sale.event_rel.hour_string,
-                'price': round(payment.sale.price*exchangeRate / 10000, 2),
-                'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
-                'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
-                'total_abono': round(received*exchangeRate / 10000, 2),
+                'price': round(payment.sale.price*BsDexchangeRate / 10000, 2),
+                'iva_amount': round(IVA_amount*BsDexchangeRate / 10000, 2),
+                'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2),
+                'total_abono': round(received*BsDexchangeRate / 10000, 2),
                 'payment_method': 'Tarjeta de Crédito',
                 'payment_date': today.strftime('%d-%m-%Y'),
                 'reference': payment_reference,
                 'link_reserva': reserva_link,
                 'localizador': payment.sale.saleLocator,
-                'exchange_rate_bsd': round(exchangeRate/100, 2),
+                'exchange_rate_bsd': round(BsDexchangeRate/100, 2),
                 'status': 'aprobado',
                 'title': 'Tu pago ha sido procesado exitosamente',
                 'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'

@@ -1,4 +1,5 @@
-from flask import render_template
+from flask import render_template, jsonify
+import requests
 import os
 import qrcode
 from io import BytesIO
@@ -359,6 +360,30 @@ def validate_discount_code(discount_code, customer, event_details, tickets_en_ca
         return {"status": False, "message": "Código de descuento inválido"}
 
     return {"total_discount": total_discount, "tickets": tickets, "status": True, "message": "Código de descuento aplicado exitosamente", "discount_id": discount.DiscountID}
+
+def get_exchange_rate_bsd():
+    exchangeRate = 0
+    try:
+        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+
+        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
+
+        if response_exchange.status_code != 200:
+            logging.error(response_exchange.status_code)
+            #temporalmente mientras se arregla cloudFlare
+            return {"exchangeRate": 23684}
+            #return {"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}, 500
+        exchange_data = response_exchange.json()
+        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
+
+        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
+            return {"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}, 500
+        
+        exchangeRate = int(exchangeRate*100)
+        return {"exchangeRate": exchangeRate}
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error al obtener la tasa de cambio: {str(e)}")
+        return {"message": "Error al conectar con el servicio de tasa de cambio."}, 502
     
 email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format
