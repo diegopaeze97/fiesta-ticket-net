@@ -3,7 +3,10 @@ import vol_api.utils as utils
 import json
 import logging
 import requests
-from vol_api.utils import normalize_referencia, validate_date_ddmmyyyy, encrypt_aes_cbc, decrypt_aes_cbc_from_b64
+from vol_api.utils import (
+    normalize_referencia, validate_date_ddmmyyyy, encrypt_aes_cbc, 
+    decrypt_aes_cbc_from_b64, format_process_payment
+)
 import os
 
 vol = Blueprint('vol', __name__)
@@ -11,15 +14,22 @@ vol = Blueprint('vol', __name__)
 BANK_HS = os.getenv("BANK_HS", "")
 BANK_KEY = os.getenv("BANK_KEY", "")
 BANK_IV = os.getenv("BANK_IV", "")
-BANK_TEST_URL = f'{os.getenv("BANK_TEST_URL", "https://200.135.106.250/rs")}/verifyP2C'
-BANK_PROD_URL = f'{os.getenv("BANK_PROD_URL", "https://cb.venezolano.com/rs")}/verifyP2C'
+# Base URLs without endpoint - endpoint will be appended
+BANK_TEST_URL_BASE = os.getenv("BANK_TEST_URL", "https://200.135.106.250/rs")
+BANK_PROD_URL_BASE = os.getenv("BANK_PROD_URL", "https://cb.venezolano.com/rs")
 USE_PRODUCTION = os.getenv("USE_PRODUCTION", "false").lower() == "true"
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "90"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 
 if not (BANK_HS and BANK_KEY and BANK_IV):
     logging.warning("BANK_HS, BANK_KEY o BANK_IV no están configurados. Ver .env")
 
-TARGET_URL = BANK_PROD_URL if USE_PRODUCTION else BANK_TEST_URL
+# Construct TARGET_URL with endpoint
+_base_url = BANK_PROD_URL_BASE if USE_PRODUCTION else BANK_TEST_URL_BASE
+# Avoid duplicating /verifyP2C if already present
+if _base_url.endswith("/verifyP2C"):
+    TARGET_URL = _base_url
+else:
+    TARGET_URL = f"{_base_url}/verifyP2C"
 
 # --- Endpoint público que tu app llamará ---
 @vol.route("/verify-p2c", methods=["POST"])
@@ -63,20 +73,17 @@ def verify_p2c():
             "monto": str(monto)  # banco puede esperar string con decimal
         }
         if processPayment is not None:
-            # Si viene booleano, convertir a true/false o 1/0 según lo desees; el spec indica enviar "1" cuando se quiere procesar
-            # Dejamos un booleano verdadero (true) si viene True, o el valor original si viene ya string/numero.
-            if isinstance(processPayment, bool):
-                dt_obj["processPayment"] = True if processPayment else False
-            else:
-                # si viene '1'/'0' o int
-                dt_obj["processPayment"] = True if str(processPayment) in ("1", "true", "True") else False
+            # Per bank documentation: send "1" to process, "0" to not process
+            dt_obj["processPayment"] = format_process_payment(processPayment)
         if pagador:
             dt_obj["pagador"] = pagador
         if identificacion:
             dt_obj["identificacion"] = identificacion
 
         dt_string = json.dumps(dt_obj, separators=(",", ":"), ensure_ascii=False)
-        logging.info("DT (plaintext): %s", dt_string)
+        # Security: Do not log sensitive payment data (DT) in plaintext
+        # logging.info("DT (plaintext): %s", dt_string)
+        logging.info("Construyendo DT para referencia: %s", referencia)
 
         # Encriptar DT
         dt_encrypted_b64 = encrypt_aes_cbc(dt_string)

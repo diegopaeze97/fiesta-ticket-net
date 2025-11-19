@@ -2,44 +2,91 @@ import os
 import base64
 import logging
 from datetime import datetime
-from flask import Flask
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from dotenv import load_dotenv
 
 # --- Config & logging ---
 load_dotenv()
-app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 BANK_HS = os.getenv("BANK_HS", "")
 BANK_KEY = os.getenv("BANK_KEY", "")
 BANK_IV = os.getenv("BANK_IV", "")
-BANK_TEST_URL = f'{os.getenv("BANK_TEST_URL", "https://200.135.106.250/rs")}/verifyP2C'
-BANK_PROD_URL = os.getenv("BANK_PROD_URL", "https://cb.venezolano.com/rs/verifyP2C")
+# Base URLs without endpoint - endpoint will be appended when needed
+BANK_TEST_URL_BASE = os.getenv("BANK_TEST_URL", "https://200.135.106.250/rs")
+BANK_PROD_URL_BASE = os.getenv("BANK_PROD_URL", "https://cb.venezolano.com/rs")
 USE_PRODUCTION = os.getenv("USE_PRODUCTION", "false").lower() == "true"
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 
 if not (BANK_HS and BANK_KEY and BANK_IV):
     logging.warning("BANK_HS, BANK_KEY o BANK_IV no están configurados. Ver .env")
 
-TARGET_URL = BANK_PROD_URL if USE_PRODUCTION else BANK_TEST_URL
+# Construct TARGET_URL with endpoint
+_base_url = BANK_PROD_URL_BASE if USE_PRODUCTION else BANK_TEST_URL_BASE
+# Avoid duplicating /verifyP2C if already present
+if _base_url.endswith("/verifyP2C"):
+    TARGET_URL = _base_url
+else:
+    TARGET_URL = f"{_base_url}/verifyP2C"
 
-# KEY/IV deben ser 16 bytes (AES-128)
-def _to_bytes(value: str) -> bytes:
-    # Si la env viene en base64, se podría decodificar; asumimos ASCII/utf-8 de 16 chars
-    b = value.encode("utf-8")
-    if len(b) not in (16, 24, 32):
-        raise ValueError("La clave/IV debe tener longitud válida para AES (16/24/32 bytes).")
-    return b
+def parse_key_or_iv(value: str, param_name: str = "KEY/IV", expected_len: int = 16) -> bytes:
+    """
+    Parse and validate AES encryption key or IV.
+    
+    Accepts two formats:
+    - Base64 encoded string (detected and decoded)
+    - UTF-8 ASCII string
+    
+    Args:
+        value: The key or IV string from environment variable
+        param_name: Name of the parameter for error messages
+        expected_len: Expected byte length (default 16 for AES-128)
+    
+    Returns:
+        bytes: The validated key/IV as bytes
+    
+    Raises:
+        ValueError: If value is empty, wrong length, or invalid format
+    
+    Note:
+        This implementation enforces AES-128 (16 bytes) by default.
+        No fallback to zero bytes is provided for security reasons.
+    """
+    if not value:
+        raise ValueError(f"{param_name} no puede estar vacío. Configura la variable de entorno.")
+    
+    # Try Base64 decode first
+    try:
+        decoded = base64.b64decode(value, validate=True)
+        if len(decoded) == expected_len:
+            return decoded
+        else:
+            raise ValueError(
+                f"{param_name} en Base64 debe decodificar a {expected_len} bytes, "
+                f"pero tiene {len(decoded)} bytes."
+            )
+    except Exception:
+        # Not valid Base64, try UTF-8 encoding
+        pass
+    
+    # Try UTF-8 encoding
+    try:
+        encoded = value.encode("utf-8")
+        if len(encoded) == expected_len:
+            return encoded
+        else:
+            raise ValueError(
+                f"{param_name} como texto UTF-8 debe ser exactamente {expected_len} bytes, "
+                f"pero tiene {len(encoded)} bytes. "
+                f"Usa Base64 o texto ASCII de {expected_len} caracteres."
+            )
+    except Exception as e:
+        raise ValueError(f"Error al procesar {param_name}: {str(e)}")
 
-try:
-    KEY = _to_bytes(BANK_KEY)
-    IV = _to_bytes(BANK_IV)
-except Exception as e:
-    logging.error("Error con KEY/IV: %s", e)
-    KEY = b"0"*16
-    IV = b"0"*16
+# Parse and validate KEY and IV - fail fast if invalid (no fallback to zeros)
+KEY = parse_key_or_iv(BANK_KEY, "BANK_KEY", 16)
+IV = parse_key_or_iv(BANK_IV, "BANK_IV", 16)
 
 # --- Crypto helpers (AES CBC PKCS#7) ---
 BLOCK_SIZE = 16
@@ -69,12 +116,66 @@ def decrypt_aes_cbc_from_b64(b64_ciphertext: str) -> str:
 
 # --- Utilities ---
 def normalize_referencia(ref: str) -> str:
-    # tomar los últimos 12 dígitos si excede
+    """
+    Normalize bank reference by filtering non-digit characters and returning last 12 digits.
+    
+    Per bank documentation: Extract digits only and return the last 12 digits.
+    
+    Args:
+        ref: Reference string (may contain letters, symbols, etc.)
+    
+    Returns:
+        str: Last 12 digits, or fewer if less than 12 digits exist, or original last 12 chars if no digits
+    
+    Examples:
+        '0123456789012345' -> '345678901234' (last 12 digits)
+        'ABC123456789012345' -> '345678901234' (last 12 digits)
+        'REF-1234567890' -> '234567890' (only 10 digits found)
+        'ABCDEFGHIJKL' -> 'ABCDEFGHIJKL' (no digits, return last 12 chars)
+    """
     if not isinstance(ref, str):
         ref = str(ref)
-    digits = ref.strip()
-    # En el requerimiento: "tomar los últimos 12 dígitos en caso de tener más"
-    return digits[-12:]
+    
+    # Filter only digits
+    digits_only = ''.join(c for c in ref if c.isdigit())
+    
+    # If we have digits, return the last 12
+    if digits_only:
+        return digits_only[-12:]
+    
+    # If no digits, fallback to last 12 characters of original (edge case)
+    return ref.strip()[-12:]
+
+def format_process_payment(process_payment) -> str:
+    """
+    Convert processPayment value to bank-expected format ("1" or "0").
+    
+    Per bank documentation: Send "1" to process payment, "0" to not process.
+    
+    Args:
+        process_payment: Can be bool, int, str ("1", "0", "true", "false", "True", "False")
+    
+    Returns:
+        str: "1" to process, "0" to not process
+    
+    Examples:
+        True -> "1"
+        False -> "0"
+        1 -> "1"
+        0 -> "0"
+        "true" -> "1"
+        "false" -> "0"
+    """
+    if isinstance(process_payment, bool):
+        return "1" if process_payment else "0"
+    
+    # Convert to string and normalize
+    str_val = str(process_payment).lower().strip()
+    
+    if str_val in ("1", "true"):
+        return "1"
+    else:
+        return "0"
 
 def validate_date_ddmmyyyy(date_str: str) -> bool:
     try:
@@ -82,3 +183,51 @@ def validate_date_ddmmyyyy(date_str: str) -> bool:
         return True
     except Exception:
         return False
+
+def format_amount(amount) -> str:
+    """
+    Format amount to string with 2 decimal places.
+    
+    Args:
+        amount: Number or string representing amount
+    
+    Returns:
+        str: Amount formatted as string with 2 decimals (e.g., "130.00")
+    
+    Examples:
+        130 -> "130.00"
+        130.5 -> "130.50"
+        "130" -> "130.00"
+    """
+    try:
+        # Convert to float and format with 2 decimals
+        float_amount = float(amount)
+        return f"{float_amount:.2f}"
+    except (ValueError, TypeError):
+        # If conversion fails, return as-is converted to string
+        return str(amount)
+
+def validate_phone_number(phone: str) -> bool:
+    """
+    Validate Venezuelan phone number format.
+    
+    Per bank documentation: Format should be 58 + area code (without leading 0) + 7-8 digits
+    Example: 584241234567 (58 + 424 + 1234567)
+    
+    Args:
+        phone: Phone number string
+    
+    Returns:
+        bool: True if valid format, False otherwise
+    """
+    if not phone:
+        return False
+    
+    # Remove any non-digit characters
+    digits = ''.join(c for c in phone if c.isdigit())
+    
+    # Should start with 58 and have 12-13 digits total (58 + area code + 7-8 digits)
+    if digits.startswith("58") and len(digits) in (12, 13):
+        return True
+    
+    return False
