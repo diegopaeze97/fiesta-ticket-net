@@ -4,7 +4,7 @@ import os
 import qrcode
 from io import BytesIO
 from flask_mail import Message
-from extensions import db, mail
+from extensions import mail
 from models import EventsUsers, Discounts
 import logging
 import uuid
@@ -53,6 +53,23 @@ def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, t
         msg.html = msg_html
 
         mail.send(msg)
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
+
+def sendqr_for_SuccessfulTicketsEmission(config, mail, user, tickets):
+    try:
+        for ticket in tickets:
+            # Genera un token de VALIDACION DE LA INSCRIPCION
+
+            subject = f'Tu Boleto de "{ticket["event"]}" - Fiesta Ticket'
+            recipient = user.Email
+
+            msg = Message(subject, sender=config["MAIL_USERNAME"], recipients=[recipient])
+            msg_html = render_template('qr_boleto_emitido.html', sale_data=ticket, qr_image=ticket["qr_image"])
+            msg.html = msg_html
+
+            mail.send(msg)
+
     except Exception as e:
         logging.error(f"Error sending email: {e}")
 
@@ -163,6 +180,59 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
+        db.session.rollback() 
+
+def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
+    try:
+
+        #ahora se notifica a los admins y tiqueteros
+        admin_subject = f'Un usuario agregó a su carrito de compras - Fiesta Ticket'
+
+        admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
+        admin_recipients = [admin.Email for admin in admins]
+
+        message_admin = (
+            f'🚨 **Un Usuario ha agregado un item a su carro de compras** 🚨\n\n'
+            f'Hola Equipo,\n\n'
+            f'Evento **{event.name}**.\n\n'
+            f'---\n'
+            f'## 👤 Detalles del Usuario\n'
+            f'- **Nombre Completo:** {user.FirstName} {user.LastName}\n'
+            f'- **Email:** {user.Email}\n'
+            f'- **Teléfono:** {user.PhoneNumber or "No registrado"}\n'
+            f'- **ID de Cliente:** {user.CustomerID}\n'
+            f'---\n'
+            f'- **Cantidad de Boletos:** {len(Tickets)}\n\n'
+            f'---\n'
+            f'## 🎟️ Detalles de los Boletos ({len(Tickets)} en total)\n'
+        )
+
+        # ----------------------------------------------------
+        # Bloque de ITERACIÓN DE TICKETS
+        # ----------------------------------------------------
+        if Tickets:
+            for i, ticket in enumerate(Tickets, 1):
+                # Formateo la información de cada ticket
+                detalle_ticket = (
+                    f'    {i}. ID: {ticket["ticket_id"]} | '
+                    f'Sección: {ticket["section"].upper()} | '
+                    f'Fila/Número: {ticket["row"]}/{ticket["number"]} | '
+                    f'Precio: ${ticket["price"]/100}\n'
+                )
+                # Concateno al mensaje principal
+                message_admin += detalle_ticket
+        else:
+            # Caso de contingencia si la lista estuviera vacía por alguna razón
+            message_admin += '    (No se pudo recuperar la información detallada de los boletos.)\n'
+
+
+        msg_admin = Message(admin_subject, sender=config["MAIL_USERNAME"], recipients=admin_recipients)
+        msg_admin.body = message_admin
+
+        mail.send(msg_admin)
+
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
         db.session.rollback()   
 
 def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets, sale_data):
@@ -228,6 +298,39 @@ def update_user_gallery_newQR(img, db, ticket, s3):
         # Guardar nuevas fotos en la base de datos respetando el orden
         ticket.QRlink = qr_url
         db.session.commit()
+
+        return qr_url
+
+    except Exception as e:
+        logging.error(e)
+        return None
+    
+def newQR(img, ticket, s3):
+    S3_BUCKET = "imagenes-fiestatravel"
+
+    try:
+        # Convertir a bytes
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        # Eliminar imagen anterior en S3
+        if ticket.QRlink:
+            try:
+                s3.delete_object(Bucket=S3_BUCKET, Key=ticket.QRlink)
+            except Exception as e:
+                print(f"Error eliminando {ticket.QRlink}: {e}")
+
+        filename = f"qr_codes/{uuid.uuid4()}.png"
+
+        s3.upload_fileobj(
+            buf,
+            S3_BUCKET,
+            filename,
+            ExtraArgs={"ContentType": "image/png"},
+        )
+
+        qr_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{filename}"
 
         return qr_url
 

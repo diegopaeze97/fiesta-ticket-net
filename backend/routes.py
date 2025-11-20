@@ -3301,8 +3301,8 @@ def approve_abono():
                     utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                IVA_amount = int(round(received * IVA / 100, 2))
-                amount_no_IVA = received - IVA_amount
+                amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
+                amount_IVA = received - amount_no_IVA
 
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
@@ -3311,7 +3311,7 @@ def approve_abono():
                     'date': payment.sale.event_rel.date_string,
                     'hour': payment.sale.event_rel.hour_string,
                     'price': round(payment.sale.price*exchangeRate / 10000, 2),
-                    'iva_amount': round(IVA_amount*exchangeRate / 10000, 2),
+                    'iva_amount': round(amount_IVA*exchangeRate / 10000, 2),
                     'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
                     'total_abono': round(received*exchangeRate / 10000, 2),
                     'payment_method': PaymentMethod,
