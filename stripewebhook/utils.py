@@ -334,8 +334,8 @@ def handle_checkout_completed(data, config):
                 utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
 
             IVA = config.get('IVA_PERCENTAGE', 0) / 100
-            IVA_amount = int(round(received * IVA , 2)/ 100)
-            amount_no_IVA = received - IVA_amount
+            amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
+            amount_IVA = received - amount_no_IVA
 
             sale_data = {
                 'sale_id': str(payment.sale.sale_id),
@@ -344,7 +344,7 @@ def handle_checkout_completed(data, config):
                 'date': payment.sale.event_rel.date_string,
                 'hour': payment.sale.event_rel.hour_string,
                 'price': round(payment.sale.price*BsDexchangeRate / 10000, 2),
-                'iva_amount': round(IVA_amount*BsDexchangeRate / 10000, 2),
+                'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2),
                 'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2),
                 'total_abono': round(received*BsDexchangeRate / 10000, 2),
                 'payment_method': 'Tarjeta de Crédito',

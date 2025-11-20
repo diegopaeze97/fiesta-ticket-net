@@ -1,22 +1,17 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app, g
-from flask_jwt_extended import create_access_token,  set_access_cookies, jwt_required, verify_jwt_in_request
-from werkzeug.security import  check_password_hash, generate_password_hash
+from flask import request, jsonify, Blueprint, current_app, g
 from extensions import db, s3, stripe
-from models import EventsUsers, Discounts, Event, Venue, Section, Seat, Ticket, Financiamientos, Sales, Logs, Payments, Active_tokens, VerificationCode, VerificationAttempt
-from flask_jwt_extended import get_jwt, get_jti
-from flask_mail import Message
+from models import EventsUsers, Discounts, Event, Venue, Section, Seat, Ticket, BankReferences, Sales, Logs, Payments
+from flask_jwt_extended import get_jwt
 import logging
 from sqlalchemy.orm import joinedload, load_only
-from sqlalchemy import and_, or_, func, not_
+from sqlalchemy import and_, or_, func, update
 import os
 import bleach
-import pandas as pd
 from datetime import datetime, timedelta, timezone
 import eventos.utils as utils
 import eventos.utils_whatsapp as WA_utils
 from extensions import mail
 from decorators.utils import optional_roles, roles_required
-import signup.utils as signup_utils
 import requests
 import re
 import calendar
@@ -24,7 +19,8 @@ from dateutil import parser
 import time
 from models import Event
 from requests.adapters import HTTPAdapter, Retry
-from decimal import Decimal, InvalidOperation
+import vol_api.functions as vol_utils
+import qrcode
 
 events = Blueprint('events', __name__)
 
@@ -34,32 +30,33 @@ events = Blueprint('events', __name__)
 
 events = Blueprint('events', __name__)
 
-lista_de_bancos_venezolanos = [
-    "banco de venezuela",
-    "banco nacional de crédito",
-    "banco bicentenario",
-    "banesco",
-    "mercantil",
-    "bbva provincial",
-    "venezolano de crédito",
-    "banco del tesoro",
-    "banco exterior",
-    "banco caroní",
-    "banco plaza",
-    "banplus",
-    "bancaribe",
-    "sofitasa",
-    "r4",
-    "banco agrícola de venezuela",
-    "banco fondo común",
-    "mi banco",
-    "banco nacional de los trabajadores",
-    "bod",
-    "bancamiga",
-    "bancrecer",
-    "banco del pueblo soberano",
-    "banco activo"
-]
+bancos_venezolanos = {
+    "BANCO DE VENEZUELA": "0102",
+    "BANCO VENEZOLANO DE CREDITO": "0104",
+    "BANCO MERCANTIL": "0105",
+    "BBVA PROVINCIAL": "0108",
+    "BANCARIBE": "0114",
+    "BANCO EXTERIOR": "0115",
+    "BANCO CARONI": "0128",
+    "BANESCO": "0134",
+    "BANCO SOFITASA": "0137",
+    "BANCO PLAZA": "0138",
+    "BANGENTE": "0146",
+    "BANCO FONDO COMUN": "0151",
+    "100% BANCO": "0156",
+    "DELSUR BANCO UNIVERSAL": "0157",
+    "BANCO DEL TESORO": "0163",
+    "BANCRECER": "0168",
+    "R4 BANCO MICROFINANCIERO C.A.": "0169",
+    "BANCO ACTIVO": "0171",
+    "BANCAMIGA BANCO UNIVERSAL, C.A.": "0172",
+    "BANCO INTERNACIONAL DE DESARROLLO": "0173",
+    "BANPLUS": "0174",
+    "BANCO DIGITAL DE LOS TRABAJADORES, BANCO UNIVERSAL": "0175",
+    "BANFANB": "0177",
+    "N58 BANCO DIGITAL BANCO MICROFINANCIERO S A": "0178",
+    "BANCO NACIONAL DE CREDITO": "0191"
+}
 
 
 @events.route('/get-map', methods=['GET'])
@@ -641,6 +638,7 @@ def buy_tickets():
         # 9️⃣ Confirmar cambios en BD local
         # ---------------------------------------------------------------
         db.session.commit()
+        utils.sendnotification_for_CartAdding(current_app.config, db, mail, customer, selected_seats, event)
         return jsonify({
             "message": "Tickets bloqueados exitosamente",
             "status": "ok"
@@ -829,11 +827,22 @@ def block_tickets():
 
         if not utils.venezuelan_phone_pattern.match(phone_number):
             return jsonify({"message": "Número de teléfono no válido"}), 400
+        
+        lista_de_bancos_venezolanos = [banco for banco in bancos_venezolanos.keys()]
 
-        if bank.lower() not in lista_de_bancos_venezolanos:
+        if bank.upper() not in lista_de_bancos_venezolanos:
             return jsonify({"message": "Banco no válido"}), 400
+        
+        bank_code = bancos_venezolanos.get(bank.upper())
 
         payment_status = "pagado por verificar"
+
+        reference_clean = bleach.clean(payment_reference, strip=True)
+        reference_no_zeros = reference_clean.lstrip("0")
+        match_reference = BankReferences.query.filter_by(reference=reference_no_zeros).first()
+
+        if match_reference:
+            return jsonify({"message": "La referencia de pago ya ha sido utilizada, comunícate con nosotros para mayor información."}), 400
 
     else:
         if not all([contact_phone, contact_phone_prefix]):
@@ -1081,6 +1090,8 @@ def block_tickets():
             'localizador': localizador,
         }
 
+        USE_PRODUCTION = current_app.config.get('USE_PRODUCTION', 'false') == "true"
+
         if payment_method == "pagomovil":
             sale_data.update({
                 'status': 'pagado',
@@ -1088,15 +1099,53 @@ def block_tickets():
                 'subtitle': 'Te notificaremos una vez que haya sido aprobado',
                 'due': round(0, 2),
             })
-        else:
-            sale_data.update({
-                'status': 'pendiente',
-                'title': 'Hemos recibido tu solicitud de pago',
-                'subtitle': 'Un miembro de nuestro equipo te contactará para confirmar los detalles',
-                'due': round((total_price + total_fee - total_discount) / 100, 2),
-            })
 
-        
+            if not USE_PRODUCTION: # por ahora, en staging no se verifica automáticamente
+
+                payment_data = {}
+                payment_data['fecha'] = today.strftime('%d/%m/%Y') if USE_PRODUCTION else '07/11/2025'
+                payment_data['banco'] = bank_code
+                payment_data['telefonoP'] = phone_number
+                payment_data['referencia'] = payment_reference
+                payment_data['monto'] = float(round(MontoBS/100, 2)) if USE_PRODUCTION else 10.0
+                
+                try:
+                    response= vol_utils.verify_p2c(payment_data)
+                    data = response[0]
+
+                    if data['status_code'] == 200:
+                        payment.Status = 'pagado'
+                        sale.status = 'pagado'
+                        sale.StatusFinanciamiento = 'pagado'
+
+                        notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
+
+                        if notify_customer['status'] == 'error':
+                            logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
+                        
+                        bank_obtained_ref = str(data['decrypted'].get('referencia')) if data.get('decrypted') else None
+                        bank_obtained_ref_no_zeros = bank_obtained_ref.lstrip("0") if bank_obtained_ref else None
+
+                        new_reference = BankReferences(
+                            reference=bank_obtained_ref_no_zeros,
+                        )
+                        db.session.add(new_reference)
+                        db.session.commit()
+                        
+                        return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok"}), 200
+                    else:
+                        logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
+                        
+                        
+                except Exception as e:
+                    logging.error(f"Error verificando pago por PagoMóvil: {str(e)}")
+
+        sale_data.update({
+            'status': 'pendiente',
+            'title': 'Hemos recibido tu solicitud de pago',
+            'subtitle': 'Un miembro de nuestro equipo te contactará para confirmar los detalles',
+            'due': round((total_price + total_fee - total_discount) / 100, 2),
+        })
 
         # Confirmar todo
         db.session.commit()
@@ -1132,7 +1181,7 @@ def block_tickets():
         WA_utils.send_new_sale_notification(current_app.config, customer, tickets, sale_data, full_phone_number)
         # ---------------------------------------------------------------
 
-        return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "ok"}), 200
+        return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "pending"}), 200
 
     except Exception as e:
         db.session.rollback()
@@ -1610,3 +1659,144 @@ def create_stripe_checkout_session():
         return jsonify({"message": "Error creando sesión de pago", "status": "error"}), 500
     finally:
         db.session.close()
+
+
+def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, discount_code):
+
+    try:
+        total_discount = payment.sale.discount
+        total_price = payment.sale.price
+
+        tickets = []
+
+        for ticket in tickets_en_carrito:
+            discount = 0
+
+            if total_discount > 0:
+                proportion = ticket.price / total_price
+                discount = int(round(total_discount * proportion, 2))
+
+            log_for_emision = Logs(
+                UserID=customer.CustomerID,
+                Type='emision de boleto',
+                Timestamp=datetime.now(),
+                Details=f"Emisión de boleto {ticket.ticket_id} para la venta {payment.sale.sale_id}",
+                SaleID=payment.sale.sale_id,
+                TicketID=ticket.ticket_id
+            )
+            db.session.add(log_for_emision)
+
+            serializer = config['serializer']
+            token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': payment.sale.sale_id})
+            localizador = os.urandom(3).hex().upper()
+
+            qr_link = f'{config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
+
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(qr_link)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+
+            qr_url = utils.newQR(img, ticket, s3)
+
+            ticket.status = 'pagado'
+            ticket.availability_status = 'Listo para canjear'
+            ticket.emission_date = datetime.now().date()
+            ticket.discount = discount
+            ticket.saleLink = token
+            ticket.saleLocator = localizador
+            ticket.QRlink = qr_url # Guardar nuevas fotos en la base de datos respetando el orden
+
+            sale_data = {
+                'row': ticket.seat.row,
+                'number': ticket.seat.number,
+                'section': ticket.seat.section.name,
+                'event': ticket.event.name,
+                'venue': ticket.event.venue.name,
+                'date': ticket.event.date_string,
+                'hour': ticket.event.hour_string,
+                'price': round(ticket.price / 100, 2),
+                'discount': round(discount / 100, 2),
+                'fee': round(ticket.fee / 100, 2),
+                'total': round((ticket.price + ticket.fee - discount) / 100, 2),
+                'link_reserva': qr_link,
+                'localizador': localizador,
+                'qr_image': qr_url
+            }
+            tickets.append(sale_data)
+            
+        IVA = config.get('IVA_PERCENTAGE', 0) / 100
+        amount_no_IVA = int(round(payment.Amount / (1 + (IVA)/100), 2))
+        amount_IVA = payment.Amount - amount_no_IVA
+        BsDexchangeRate = customer.BsDExchangeRate
+        total_fee = payment.sale.fee
+        amount_discount = payment.sale.discount
+
+        sale_data = {
+            'sale_id': str(payment.sale.sale_id),
+            'event': payment.sale.event_rel.name,
+            'venue': payment.sale.event_rel.venue.name,
+            'date': payment.sale.event_rel.date_string,
+            'hour': payment.sale.event_rel.hour_string,
+            'price': round(payment.sale.price*BsDexchangeRate / 10000, 2),
+            'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2),
+            'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2),
+            'total_abono': round(payment.Amount*BsDexchangeRate / 10000, 2),
+            'payment_method': payment.PaymentMethod,
+            'payment_date': payment.PaymentDate.strftime('%d-%m-%Y'),
+            'reference': payment.Reference or 'N/A',
+            'link_reserva': payment.sale.saleLink,
+            'localizador': payment.sale.saleLocator,
+            'exchange_rate_bsd': round(BsDexchangeRate/100, 2),
+            'status': 'aprobado',
+            'title': 'Tu pago ha sido procesado exitosamente',
+            'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
+        }
+
+        discount_code = discount_code.upper() if discount_code else None
+
+        if discount_code:
+            discount = Discounts.query.filter(Discounts.Code == discount_code).one_or_none()
+
+        if discount:
+            # Actualizar uso del descuento
+            discount.UsedCount = (discount.UsedCount or 0) + 1
+            payment.sale.discount_ref = discount.DiscountID
+
+    
+        # Actualizar métricas del evento
+        stmt = (
+            update(Event)
+            .where(Event.event_id == int(payment.sale.event_rel.event_id))
+            .values(
+                total_sales = func.coalesce(Event.total_sales, 0) + 1,
+                gross_sales = func.coalesce(Event.gross_sales, 0) + (int(payment.Amount) if payment.Amount is not None else 0),
+                total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
+                total_discounts = func.coalesce(Event.total_discounts, 0) + (int(amount_discount) if amount_discount is not None else 0),
+                total_discounts_tickera = (
+                    func.coalesce(Event.total_discounts_tickera, 0)
+                    + ((func.coalesce(Event.Fee, 0) * int(amount_discount) / 100) if amount_discount is not None else 0)
+                )
+            )
+            .returning(Event.event_id)  # opcional, útil para confirmar
+        )
+
+        db.session.execute(stmt)
+
+        db.session.commit()
+
+        utils.sendqr_for_SuccessfulTicketsEmission(config, mail, customer, tickets)
+        utils.sendnotification_for_CompletedPaymentStatus(config, db, mail, customer, tickets, sale_data)
+
+        return {"message": "Métricas del evento actualizadas exitosamente", "status": "ok"}
+
+    except Exception as e:
+        # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+        logging.error(f"Error al actualizar métricas del evento: {e}")
+        db.session.rollback() 
+        return {"error": f"Fallo al actualizar DB: {e}", "status": "error"}

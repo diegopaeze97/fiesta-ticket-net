@@ -1,0 +1,28 @@
+curl -k -v https://localhost:8080/vol/verify-p2c \
+  -H "Content-Type: application/json" \
+  -d '{
+    "referencia":"000000348821",
+    "fecha":"07/11/2025",
+    "banco":"0104",
+    "identificacion": "V25213842", 
+    "telefonoP":"04122144339",
+    "monto":"10.00",
+    "processPayment": true
+  }'
+
+  diegopaez@MacBook-Pro-de-Diego ~ % curl -k -v https://200.35.106.250/rs/verifyP2C \
+  -H "Content-Type: application/json" \
+  -d "{"hs": "p2zolj8yNwf0LfHT+oCH1Q==", "dt": "MdH4C9/Asi+LWzu5846l9o8tKvZeNYBYR7eXlTgOFtC9kKgGRp61Nfov4ryFwoKhEjRyEiY/B27ZyWkgZ4X4SCWSBNJlpgmVbKqlKsYMSiSjsoDjYSNE6QTsgQFd4LcLfAAEoRKfkdd0x0ch2tH2UdEMTctVzgwlWf6pV/X35p2+7tcSk4H0SBMQ/0H4vyzE"}"
+
+
+
+{'hs': 'p2zolj8yNwf0LfHT+oCH1Q==', 'dt': 'MdH4C9/Asi+LWzu5846l9o8tKvZeNYBYR7eXlTgOFtC9kKgGRp61Nfov4ryFwoKhEjRyEiY/B27ZyWkgZ4X4SCWSBNJlpgmVbKqlKsYMSiSjsoDjYSNE6QTsgQFd4LcLWv3o0reSBkfU6gIFfE556iU00kFutKBwb+z57Xky+fbl8wurYTwZXMOGz/jOy5rJNH+/M79IFBhpwDOMEILWjg=='}
+
+{'hs': 'p2zolj8yNwf0LfHT+oCH1Q==', 'dt': 'MdH4C9/Asi+LWzu5846l9o8tKvZeNYBYR7eXlTgOFtC9kKgGRp61Nfov4ryFwoKhEjRyEiY/B27ZyWkgZ4X4SCWSBNJlpgmVbKqlKsYMSiSjsoDjYSNE6QTsgQFd4LcLfAAEoRKfkdd0x0ch2tH2UdEMTctVzgwlWf6pV/X35p2+7tcSk4H0SBMQ/0H4vyzE'}
+
+
+curl -k -v https://200.35.106.250/rs/verifyP2C \
+  -H "Content-Type: application/json" \
+  -d "{"hs": "hola", "dt": "hey"}"
+
+

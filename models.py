@@ -365,6 +365,13 @@ class Discounts(db.Model):
     sales = relationship('Sales', back_populates='discount_rel')
     creator = relationship('EventsUsers', backref='created_discounts')
 
+class BankReferences(db.Model):
+    __tablename__ = 'bank_references'
+
+    id = Column(Integer, primary_key=True)
+    reference = Column(String, nullable=False)
+    created_at = Column(DateTime, default=db.func.current_timestamp())
+
 
 
 
