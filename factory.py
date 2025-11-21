@@ -78,7 +78,7 @@ def createApp():
     app.config['BANK_HS'] = os.getenv('BANK_HS')
     app.config['BANK_TEST_URL'] = os.getenv('BANK_TEST_URL')
     app.config['BANK_PROD_URL'] = os.getenv('BANK_PROD_URL')
-    app.config['USE_PRODUCTION'] = os.getenv('USE_PRODUCTION', 'false').lower() == 'true'
+    app.config['USE_PRODUCTION'] = os.getenv('USE_PRODUCTION')
     app.config['REQUEST_TIMEOUT'] = int(os.getenv('REQUEST_TIMEOUT', '30'))
 
     db.init_app(app)
