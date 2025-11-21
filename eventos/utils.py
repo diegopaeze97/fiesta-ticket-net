@@ -387,7 +387,7 @@ def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, s
             f'- **Cantidad de Boletos:** {len(tickets_en_carrito)}\n\n'
             f'---\n'
             f'## 💰 Detalles Financieros\n'
-            f'- **Monto Verificado:** ${MontoBS/100}\n'
+            f'- **Monto Verificado:** ${round(MontoBS/100, 2)}\n'
             f'- **Método de Pago:** Pago Móvil\n\n'
             f'- **Referencia/ID de Transacción:** {payment.Reference}\n'
             f'- **Banco Emisor:** {payment.Bank or "No registrado"}\n'
