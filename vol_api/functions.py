@@ -13,14 +13,14 @@ BANK_IV = os.getenv("BANK_IV", "")
 # Base URLs without endpoint - endpoint will be appended
 BANK_TEST_URL_BASE = os.getenv("BANK_TEST_URL", "https://200.135.106.250/rs")
 BANK_PROD_URL_BASE = os.getenv("BANK_PROD_URL", "https://cb.venezolano.com/rs")
-USE_PRODUCTION = os.getenv("USE_PRODUCTION", "false").lower() == "true"
+ENVIRONMENT = os.getenv("ENVIRONMENT").lower()
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 
 if not (BANK_HS and BANK_KEY and BANK_IV):
     logging.warning("BANK_HS, BANK_KEY o BANK_IV no están configurados. Ver .env")
 
 # Construct TARGET_URL with endpoint
-_base_url = BANK_PROD_URL_BASE if USE_PRODUCTION else BANK_TEST_URL_BASE
+_base_url = BANK_PROD_URL_BASE if ENVIRONMENT in ['production', 'development'] else BANK_TEST_URL_BASE
 # Avoid duplicating /verifyP2C if already present
 if _base_url.endswith("/verifyP2C"):
     TARGET_URL = _base_url

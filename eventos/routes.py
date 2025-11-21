@@ -1101,7 +1101,7 @@ def block_tickets():
             'localizador': localizador,
         }
 
-        USE_PRODUCTION = current_app.config.get('USE_PRODUCTION', 'false') == 'true'
+        ENVIRONMENT = current_app.config.get('ENVIRONMENT').lower()
 
         if payment_method == "pagomovil":
             sale_data.update({
@@ -1112,11 +1112,17 @@ def block_tickets():
             })
 
             payment_data = {}
-            payment_data['fecha'] = today.strftime('%d/%m/%Y') if USE_PRODUCTION else '07/11/2025'
+            payment_data['fecha'] = today.strftime('%d/%m/%Y') if ENVIRONMENT in ['production', 'development'] else '07/11/2025'
             payment_data['banco'] = bank_code
             payment_data['telefonoP'] = phone_number
             payment_data['referencia'] = payment_reference
-            payment_data['monto'] = float(round(MontoBS/100000, 2)) if USE_PRODUCTION else 15.0
+
+            MontoBS = MontoBS 
+            
+            if ENVIRONMENT == 'development': # para pruebas en desarrollo
+                MontoBS = MontoBS/1000
+
+            payment_data['monto'] = float(round(MontoBS/100, 2)) if ENVIRONMENT in ['production', 'development'] else 15.00
             
             try:
                 response= vol_utils.verify_p2c(payment_data)
@@ -1140,6 +1146,8 @@ def block_tickets():
                     )
                     db.session.add(new_reference)
                     db.session.commit()
+
+                    utils.notify_admins_automatic_pagomovil_verification(current_app.config, db, mail, customer, sale, payment, tickets_en_carrito, MontoBS)
                     
                     return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
                 else:
