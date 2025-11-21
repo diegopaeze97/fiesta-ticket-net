@@ -1111,45 +1111,44 @@ def block_tickets():
                 'due': round(0, 2),
             })
 
-            if not USE_PRODUCTION: # por ahora, en staging no se verifica automáticamente
 
-                payment_data = {}
-                payment_data['fecha'] = today.strftime('%d/%m/%Y') if USE_PRODUCTION else '07/11/2025'
-                payment_data['banco'] = bank_code
-                payment_data['telefonoP'] = phone_number
-                payment_data['referencia'] = payment_reference
-                payment_data['monto'] = float(round(MontoBS/100, 2)) if USE_PRODUCTION else 10.0
-                
-                try:
-                    response= vol_utils.verify_p2c(payment_data)
-                    data = response[0]
+            payment_data = {}
+            payment_data['fecha'] = today.strftime('%d/%m/%Y') if USE_PRODUCTION else '07/11/2025'
+            payment_data['banco'] = bank_code
+            payment_data['telefonoP'] = phone_number
+            payment_data['referencia'] = payment_reference
+            payment_data['monto'] = float(round(MontoBS/100/1000, 2)) if USE_PRODUCTION else 15.0
+            
+            try:
+                response= vol_utils.verify_p2c(payment_data)
+                data = response[0]
 
-                    if data['status_code'] == 200:
-                        payment.Status = 'pagado'
-                        sale.status = 'pagado'
-                        sale.StatusFinanciamiento = 'pagado'
+                if data['status_code'] == 200:
+                    payment.Status = 'pagado'
+                    sale.status = 'pagado'
+                    sale.StatusFinanciamiento = 'pagado'
 
-                        notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
+                    notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
 
-                        if notify_customer['status'] == 'error':
-                            logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
-                        
-                        bank_obtained_ref = str(data['decrypted'].get('referencia')) if data.get('decrypted') else None
-                        bank_obtained_ref_no_zeros = bank_obtained_ref.lstrip("0") if bank_obtained_ref else None
+                    if notify_customer['status'] == 'error':
+                        logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
+                    
+                    bank_obtained_ref = str(data['decrypted'].get('referencia')) if data.get('decrypted') else None
+                    bank_obtained_ref_no_zeros = bank_obtained_ref.lstrip("0") if bank_obtained_ref else None
 
-                        new_reference = BankReferences(
-                            reference=bank_obtained_ref_no_zeros,
-                        )
-                        db.session.add(new_reference)
-                        db.session.commit()
-                        
-                        return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
-                    else:
-                        logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
-                        
-                        
-                except Exception as e:
-                    logging.error(f"Error verificando pago por PagoMóvil: {str(e)}")
+                    new_reference = BankReferences(
+                        reference=bank_obtained_ref_no_zeros,
+                    )
+                    db.session.add(new_reference)
+                    db.session.commit()
+                    
+                    return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
+                else:
+                    logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
+                    
+                    
+            except Exception as e:
+                logging.error(f"Error verificando pago por PagoMóvil: {str(e)}")
 
         sale_data.update({
             'status': 'pendiente',

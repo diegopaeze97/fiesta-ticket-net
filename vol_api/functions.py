@@ -77,8 +77,7 @@ def verify_p2c(payload):
 
         dt_string = json.dumps(dt_obj, separators=(",", ":"), ensure_ascii=False)
         # Security: Do not log sensitive payment data (DT) in plaintext
-        # logging.info("DT (plaintext): %s", dt_string)
-        logging.info("Construyendo DT para referencia: %s", referencia)
+        logging.info("DT (plaintext): %s", dt_string)
 
         # Encriptar DT
         dt_encrypted_b64 = utils.encrypt_aes_cbc(dt_string)
@@ -89,6 +88,7 @@ def verify_p2c(payload):
             "dt": dt_encrypted_b64
         }
         logging.info("Enviando petición a %s", TARGET_URL)
+        logging.info("cuerpo de la solicitud encriptado: %s", body)
 
         # POST al banco
         headers = {"Content-Type": "application/json"}
@@ -148,6 +148,8 @@ def verify_p2c(payload):
             except Exception:
                 # no pudimos parsear ni desencriptar: devolver texto crudo y código
                 return {"status_code": status_code, "raw_text": text}, status_code
+            
+        logging.info("Respuesta desencriptada: %s", decrypted)
 
         # Si tenemos objeto desencriptado, devolverlo
         return {"status_code": status_code, "decrypted": decrypted}, status_code
