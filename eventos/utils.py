@@ -363,6 +363,51 @@ def send_ban_notification(email, config):
         logging.exception("Error al enviar el correo de verificación")
         #db.session.rollback()
 
+def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, sale, payment, tickets_en_carrito, MontoBS):
+    try:
+        admin_subject = f'Pago Movil verificado automáticamente - Venta ID {sale.sale_id} - Fiesta Ticket'
+
+        admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
+        admin_recipients = [admin.Email for admin in admins]
+
+        message_admin = (
+            f'🚨 **PAGO MOVIL VERIFICADO AUTOMÁTICAMENTE** 🚨\n\n'
+            f'Hola Equipo,\n\n'
+            f'Se ha **verificado automáticamente un Pago Móvil** (ID de Venta: {sale.sale_id}) '
+            f'del usuario **{customer.Email}**.\n\n'
+            f'---\n'
+            f'## 👤 Detalles del Usuario\n'
+            f'- **Nombre Completo:** {customer.FirstName} {customer.LastName}\n'
+            f'- **Email:** {customer.Email}\n'
+            f'- **Teléfono:** {customer.PhoneNumber or "No registrado"}\n'
+            f'- **ID de Cliente:** {customer.CustomerID}\n'
+            f'---\n'
+            f'## 🎫 Detalles de la Venta\n'
+            f'- **Localizador (ID de Venta):** {sale.sale_id}\n'
+            f'- **Cantidad de Boletos:** {len(tickets_en_carrito)}\n\n'
+            f'---\n'
+            f'## 💰 Detalles Financieros\n'
+            f'- **Monto Verificado:** ${round(MontoBS/100, 2)}\n'
+            f'- **Método de Pago:** Pago Móvil\n\n'
+            f'- **Referencia/ID de Transacción:** {payment.Reference}\n'
+            f'- **Banco Emisor:** {payment.Bank or "No registrado"}\n'
+            f'- **Telefono:** {payment.PhoneNumber or "No registrado"}\n'
+            f'---\n'
+            f'Gracias por su atención,\n'
+            f'**Equipo de Fiesta Ticket**\n'
+
+            f''
+        )
+
+        msg_admin = Message(admin_subject, sender=config["MAIL_USERNAME"], recipients=admin_recipients)
+        msg_admin.body = message_admin
+
+        mail.send(msg_admin)
+
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
+        db.session.rollback()
+
 def validate_discount_code(discount_code, customer, event_details, tickets_en_carrito, type):
     """
     Valida un código de descuento y devuelve el descuento aplicable.

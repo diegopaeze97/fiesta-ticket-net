@@ -1070,6 +1070,7 @@ def block_tickets():
             PhoneNumber=phone_number
         )
         db.session.add(payment)
+        db.session.flush()
 
         # ----------------------------------------------------------------
         # 7️⃣ Enviar notificación según método de pago
@@ -1101,7 +1102,7 @@ def block_tickets():
             'localizador': localizador,
         }
 
-        USE_PRODUCTION = current_app.config.get('USE_PRODUCTION', 'false') == "true"
+        ENVIRONMENT = current_app.config.get('ENVIRONMENT').lower()
 
         if payment_method == "pagomovil":
             sale_data.update({
@@ -1111,45 +1112,51 @@ def block_tickets():
                 'due': round(0, 2),
             })
 
-            if not USE_PRODUCTION: # por ahora, en staging no se verifica automáticamente
+            payment_data = {}
+            payment_data['fecha'] = today.strftime('%d/%m/%Y') if ENVIRONMENT in ['production', 'development'] else '07/11/2025'
+            payment_data['banco'] = bank_code
+            payment_data['telefonoP'] = phone_number
+            payment_data['referencia'] = payment_reference
 
-                payment_data = {}
-                payment_data['fecha'] = today.strftime('%d/%m/%Y') if USE_PRODUCTION else '07/11/2025'
-                payment_data['banco'] = bank_code
-                payment_data['telefonoP'] = phone_number
-                payment_data['referencia'] = payment_reference
-                payment_data['monto'] = float(round(MontoBS/100, 2)) if USE_PRODUCTION else 15.0
-                
-                try:
-                    response= vol_utils.verify_p2c(payment_data)
-                    data = response[0]
+            MontoBS = MontoBS 
+            
+            if ENVIRONMENT == 'development': # para pruebas en desarrollo
+                MontoBS = MontoBS/1000
 
-                    if data['status_code'] == 200:
-                        payment.Status = 'pagado'
-                        sale.status = 'pagado'
-                        sale.StatusFinanciamiento = 'pagado'
+            payment_data['monto'] = float(round(MontoBS/100, 2)) if ENVIRONMENT in ['production', 'development'] else 15.00
+            
+            try:
+                response= vol_utils.verify_p2c(payment_data)
+                data = response[0]
 
-                        notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
+                if data['status_code'] == 200:
+                    payment.Status = 'pagado'
+                    sale.status = 'pagado'
+                    sale.StatusFinanciamiento = 'pagado'
 
-                        if notify_customer['status'] == 'error':
-                            logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
-                        
-                        bank_obtained_ref = str(data['decrypted'].get('referencia')) if data.get('decrypted') else None
-                        bank_obtained_ref_no_zeros = bank_obtained_ref.lstrip("0") if bank_obtained_ref else None
+                    notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
 
-                        new_reference = BankReferences(
-                            reference=bank_obtained_ref_no_zeros,
-                        )
-                        db.session.add(new_reference)
-                        db.session.commit()
-                        
-                        return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
-                    else:
-                        logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
-                        
-                        
-                except Exception as e:
-                    logging.error(f"Error verificando pago por PagoMóvil: {str(e)}")
+                    if notify_customer['status'] == 'error':
+                        logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
+                    
+                    bank_obtained_ref = str(data['decrypted'].get('referencia')) if data.get('decrypted') else None
+                    bank_obtained_ref_no_zeros = bank_obtained_ref.lstrip("0") if bank_obtained_ref else None
+
+                    new_reference = BankReferences(
+                        reference=bank_obtained_ref_no_zeros,
+                    )
+                    db.session.add(new_reference)
+                    db.session.commit()
+
+                    utils.notify_admins_automatic_pagomovil_verification(current_app.config, db, mail, customer, sale, payment, tickets_en_carrito, MontoBS)
+                    
+                    return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
+                else:
+                    logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
+                    
+                    
+            except Exception as e:
+                logging.error(f"Error verificando pago por PagoMóvil: {str(e)}")
 
         sale_data.update({
             'status': 'pendiente',
