@@ -1118,7 +1118,7 @@ def block_tickets():
                 payment_data['banco'] = bank_code
                 payment_data['telefonoP'] = phone_number
                 payment_data['referencia'] = payment_reference
-                payment_data['monto'] = float(round(MontoBS/100, 2)) if USE_PRODUCTION else 10.0
+                payment_data['monto'] = float(round(MontoBS/100, 2)) if USE_PRODUCTION else 15.0
                 
                 try:
                     response= vol_utils.verify_p2c(payment_data)
