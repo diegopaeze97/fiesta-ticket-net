@@ -1101,7 +1101,7 @@ def block_tickets():
             'localizador': localizador,
         }
 
-        USE_PRODUCTION = current_app.config.get('USE_PRODUCTION', 'false') == "true"
+        USE_PRODUCTION = current_app.config.get('USE_PRODUCTION', 'false') == 'true'
 
         if payment_method == "pagomovil":
             sale_data.update({
