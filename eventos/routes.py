@@ -1070,6 +1070,7 @@ def block_tickets():
             PhoneNumber=phone_number
         )
         db.session.add(payment)
+        db.session.flush()
 
         # ----------------------------------------------------------------
         # 7️⃣ Enviar notificación según método de pago

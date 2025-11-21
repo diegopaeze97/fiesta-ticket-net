@@ -365,7 +365,7 @@ def send_ban_notification(email, config):
 
 def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, sale, payment, tickets_en_carrito, MontoBS):
     try:
-        admin_subject = f'Pago Movil verificado automáticamente - Venta ID {sale.SaleID} - Fiesta Ticket'
+        admin_subject = f'Pago Movil verificado automáticamente - Venta ID {sale.sale_id} - Fiesta Ticket'
 
         admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
         admin_recipients = [admin.Email for admin in admins]
@@ -373,7 +373,7 @@ def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, s
         message_admin = (
             f'🚨 **PAGO MOVIL VERIFICADO AUTOMÁTICAMENTE** 🚨\n\n'
             f'Hola Equipo,\n\n'
-            f'Se ha **verificado automáticamente un Pago Móvil** (ID de Venta: {sale.SaleID}) '
+            f'Se ha **verificado automáticamente un Pago Móvil** (ID de Venta: {sale.sale_id}) '
             f'del usuario **{customer.Email}**.\n\n'
             f'---\n'
             f'## 👤 Detalles del Usuario\n'
@@ -383,15 +383,19 @@ def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, s
             f'- **ID de Cliente:** {customer.CustomerID}\n'
             f'---\n'
             f'## 🎫 Detalles de la Venta\n'
-            f'- **Localizador (ID de Venta):** {sale.SaleID}\n'
+            f'- **Localizador (ID de Venta):** {sale.sale_id}\n'
             f'- **Cantidad de Boletos:** {len(tickets_en_carrito)}\n\n'
             f'---\n'
             f'## 💰 Detalles Financieros\n'
             f'- **Monto Verificado:** ${MontoBS/100}\n'
             f'- **Método de Pago:** Pago Móvil\n\n'
+            f'- **Referencia/ID de Transacción:** {payment.Reference}\n'
+            f'- **Banco Emisor:** {payment.Bank or "No registrado"}\n'
+            f'- **Telefono:** {payment.PhoneNumber or "No registrado"}\n'
             f'---\n'
             f'Gracias por su atención,\n'
             f'**Equipo de Fiesta Ticket**\n'
+
             f''
         )
 
