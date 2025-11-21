@@ -215,6 +215,7 @@ def get_map():
             print(f"  - Total: {total_end - start_time:.4f}")
 
             event_details  = {  
+                "event_id": event.event_id,
                 "name": event.name,
                 "date": event.date_string,
                 "hour": event.hour_string,
@@ -622,6 +623,8 @@ def buy_tickets():
             or_(Ticket.status == 'disponible', Ticket.status == 'en carrito')
         )).all()
 
+        amount_total = 0
+
         # 4️⃣ Asignar nuevos tickets
         for ticket_sistema in tickets_sistema:
             if not ticket_sistema.ticket_id_provider:
@@ -634,6 +637,10 @@ def buy_tickets():
                     ticket_sistema.fee = (event.Fee * ticket_sistema.price / 100) if event.Fee else 0
                     ticket_sistema.expires_at = expire_dt_aware
 
+                    amount_total += ticket_sistema.price
+
+        amount_total = int(round(amount_total/100, 2))
+
         # ---------------------------------------------------------------
         # 9️⃣ Confirmar cambios en BD local
         # ---------------------------------------------------------------
@@ -641,7 +648,9 @@ def buy_tickets():
         utils.sendnotification_for_CartAdding(current_app.config, db, mail, customer, selected_seats, event)
         return jsonify({
             "message": "Tickets bloqueados exitosamente",
-            "status": "ok"
+            "status": "ok",
+            "tickets": selected_seats,
+            "total": amount_total
         }), 200
 
     except requests.exceptions.RequestException as e:
@@ -1073,6 +1082,8 @@ def block_tickets():
         sale.saleLink = token
         sale.saleLocator = localizador
 
+        total_abono = round((total_price + total_fee - total_discount) / 100, 2)
+
         sale_data = {
             'sale_id': sale.sale_id,
             'event': sale.event_rel.name,
@@ -1082,7 +1093,7 @@ def block_tickets():
             'price': round(sale.price / 100, 2),
             'discount': round(sale.discount / 100, 2),
             'fee': round(sale.fee / 100, 2),
-            'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
+            'total_abono': total_abono,
             'payment_method': payment_method.capitalize(),
             'payment_date': today.strftime('%d-%m-%Y'),
             'reference': payment_reference or 'N/A',
@@ -1132,7 +1143,7 @@ def block_tickets():
                         db.session.add(new_reference)
                         db.session.commit()
                         
-                        return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok"}), 200
+                        return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
                     else:
                         logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
                         
@@ -1146,6 +1157,12 @@ def block_tickets():
             'subtitle': 'Un miembro de nuestro equipo te contactará para confirmar los detalles',
             'due': round((total_price + total_fee - total_discount) / 100, 2),
         })
+
+        if total_discount > 0:
+            if discount_code:
+                discount = Discounts.query.filter(Discounts.Code == discount_code).first()
+                if discount:
+                    discount.UsedCount = (discount.UsedCount or 0) + 1
 
         # Confirmar todo
         db.session.commit()
@@ -1181,7 +1198,7 @@ def block_tickets():
         WA_utils.send_new_sale_notification(current_app.config, customer, tickets, sale_data, full_phone_number)
         # ---------------------------------------------------------------
 
-        return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "pending"}), 200
+        return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "pending", "tickets": tickets, "total": total_abono}), 200
 
     except Exception as e:
         db.session.rollback()
@@ -1793,7 +1810,7 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
         utils.sendqr_for_SuccessfulTicketsEmission(config, mail, customer, tickets)
         utils.sendnotification_for_CompletedPaymentStatus(config, db, mail, customer, tickets, sale_data)
 
-        return {"message": "Métricas del evento actualizadas exitosamente", "status": "ok"}
+        return {"message": "Métricas del evento actualizadas exitosamente", "status": "ok", "tickets": tickets}
 
     except Exception as e:
         # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
