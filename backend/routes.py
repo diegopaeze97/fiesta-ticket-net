@@ -2379,7 +2379,7 @@ def block_tickets():
     if not all([user_id, payment_method, tickera_id, tickera_api_key, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
-    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe"]:
+    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos"]:
         return jsonify({"message": "Método de pago no válido"}), 400
     
     if len(selectedSeats) == 0:
@@ -2989,8 +2989,11 @@ def approve_abono():
 
         if cancel_reservation is None:
             return jsonify({'message': 'Falta el campo cancel_reservation para el rechazo', 'status': 'error'}), 400
+        
+        if received is None or not isinstance(received, (int, float)) or received < 0:
+            return jsonify({'message': 'El monto recibido no es válido', 'status': 'error'}), 400
 
-        if not all([payment_id, received, PaymentMethod, aprobacion]):
+        if not all([payment_id, PaymentMethod, aprobacion]):
             return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
 
         if aprobacion not in ['aprobado', 'rechazado']:
