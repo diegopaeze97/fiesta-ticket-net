@@ -365,6 +365,18 @@ class Discounts(db.Model):
     sales = relationship('Sales', back_populates='discount_rel')
     creator = relationship('EventsUsers', backref='created_discounts')
 
+
+'''
+class PromisedDiscounts(db.Model):
+    __tablename__ = 'promised_discounts'
+
+    PromisedDiscountID = Column(Integer, primary_key=True)
+    EventID = Column(Integer, ForeignKey('sales.sale_id'), nullable=False)
+    DiscountID = Column(Integer, ForeignKey('discounts.DiscountID'), nullable=False)
+    CustomerID = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=False)
+    CreatedAt = Column(DateTime, default=db.func.current_timestamp())
+'''
+
 class BankReferences(db.Model):
     __tablename__ = 'bank_references'
 

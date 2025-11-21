@@ -2636,7 +2636,13 @@ def block_tickets():
             'status': 'pagado',
             'title': 'Estamos procesando tu abono',
             'subtitle': 'Te notificaremos una vez que haya sido aprobado',
-        }     
+        } 
+        
+        if total_discount > 0:
+            if discount_code:
+                discount = Discounts.query.filter(Discounts.Code == discount_code).first()
+                if discount:
+                    discount.UsedCount = (discount.UsedCount or 0) + 1
 
         # Confirmar todo
         db.session.commit()
@@ -3136,6 +3142,13 @@ def approve_abono():
                     'subtitle': 'Por favor contacta a un administrador para más información'
                 }
 
+                if payment.sale.discount > 0:
+                    discount_id = payment.sale.discount_ref
+                    if discount_id:
+                        discount = Discounts.query.filter(Discounts.DiscountID == discount_id).first()
+                        if discount:
+                            discount.UsedCount = (discount.UsedCount or 1) - 1
+
                 utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
 
             db.session.commit()
@@ -3206,16 +3219,6 @@ def approve_abono():
                 except Exception:
                     db.session.rollback()
                     return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
-
-                if payment.sale.discount > 0:
-                    discount_ref = payment.sale.discount_ref
-                    if discount_ref:
-                        discount = Discounts.query.filter(Discounts.DiscountID == discount_ref).first()
-                        if discount:
-                            discount.UsedCount = (discount.UsedCount or 0) + 1
-                            payment.sale.discount_ref = discount.DiscountID
-
-
 
                 payment.sale.StatusFinanciamiento = 'pagado' #completamente pagado
                 payment.sale.status = 'pagado' #cambiamos el estado de la venta a aprobado si ya se pagó todo
@@ -3829,3 +3832,99 @@ def load_users():
     finally:
         db.session.close()
     
+@backend.route('/create-coupon', methods=['POST'])
+@roles_required(allowed_roles=["admin"])
+def create_coupon():
+    try:
+        user_id = get_jwt().get("id")
+
+        # 1. Extraer datos del formulario
+        code = request.json.get('code', '').strip()
+        description = request.json.get('description', '').strip()
+        discount_type = request.json.get('discount_type', '').strip()  # 'percentage' o 'fixed'
+        discount_value = request.json.get('discount_value')
+        valid_from_str = request.json.get('valid_from', '').strip()
+        valid_to_str = request.json.get('valid_to', '').strip()
+        max_uses = request.json.get('max_uses')
+        applicable_events = request.json.get('applicable_events', [])  # lista de event_ids
+        applicable_users = request.json.get('applicable_users', [])  # lista de user_ids
+
+        if not all([code, discount_type, discount_value, valid_from_str, valid_to_str, max_uses]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        if discount_type not in ['percentage', 'fixed']:
+            return jsonify({'message': 'Tipo de descuento inválido', 'status': 'error'}), 400
+
+        try:
+            discount_value = float(discount_value)
+            if discount_value <= 0:
+                raise ValueError
+        except ValueError:
+            return jsonify({'message': 'Valor de descuento inválido', 'status': 'error'}), 400
+
+        try:
+            valid_from = datetime.strptime(valid_from_str, "%Y-%m-%d").date()
+            valid_to = datetime.strptime(valid_to_str, "%Y-%m-%d").date()
+            if valid_from > valid_to:
+                return jsonify({'message': 'Fecha de inicio debe ser antes de fecha de fin', 'status': 'error'}), 400
+        except ValueError:
+            return jsonify({'message': 'Formato de fecha inválido', 'status': 'error'}), 400
+
+        try:
+            max_uses = int(max_uses)
+            if max_uses <= 0:
+                raise ValueError
+        except ValueError:
+            return jsonify({'message': 'Número máximo de usos inválido', 'status': 'error'}), 400
+        
+        if discount_type == 'percentage' and (discount_value > 100):
+            return jsonify({'message': 'El valor de descuento porcentual no puede ser mayor a 100', 'status': 'error'}), 400
+        
+        if len(applicable_events) > 0:
+            if not isinstance(applicable_events, list):
+                return jsonify({'message': 'Eventos aplicables debe ser una lista', 'status': 'error'}), 400
+            applicable_events = [int(eid) for eid in applicable_events if isinstance(eid, int) or (isinstance(eid, str) and eid.isdigit())]
+            # Verificar si todos los event_ids existen en la base de datos
+            existing_events = Event.query.filter(Event.event_id.in_(applicable_events)).all()
+            existing_event_ids = {event.event_id for event in existing_events}
+            invalid_event_ids = [eid for eid in applicable_events if eid not in existing_event_ids]
+            if invalid_event_ids:
+                return jsonify({'message': f'Los siguientes IDs de eventos no existen: {invalid_event_ids}', 'status': 'error'}), 400
+        if len(applicable_users) > 0:
+            if not isinstance(applicable_users, list):
+                return jsonify({'message': 'Usuarios aplicables debe ser una lista', 'status': 'error'}), 400
+            applicable_users = [int(uid) for uid in applicable_users if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit())]
+            # Verificar si todos los user_ids existen en la base de datos
+            existing_users = EventsUsers.query.filter(EventsUsers.CustomerID.in_(applicable_users)).all()
+            existing_user_ids = {user.CustomerID for user in existing_users}
+            invalid_user_ids = [uid for uid in applicable_users if uid not in existing_user_ids]
+            if invalid_user_ids:
+                return jsonify({'message': f'Los siguientes IDs de usuarios no existen: {invalid_user_ids}', 'status': 'error'}), 400
+
+        # Verificar si el código ya existe
+        existing_coupon = Discounts.query.filter(func.lower(Discounts.Code) == code.lower()).first()
+        if existing_coupon:
+            return jsonify({'message': 'El código de cupón ya existe', 'status': 'error'}), 400
+
+        # Crear el cupón
+        new_coupon = Discounts(
+            Code=code,
+            Description=description,
+            Percentage=discount_value if discount_type == 'percentage' else None,
+            FixedAmount=discount_value*100 if discount_type == 'fixed' else None,
+
+            DiscountValue=discount_value,
+            ValidFrom=valid_from,
+            ValidTo=valid_to,
+            UsageLimit=max_uses,
+            CreatedBy=user_id,
+            ApplicableEvents=applicable_events, 
+            ApplicableUsers=applicable_users
+        ) 
+        db.session.add(new_coupon)
+        db.session.commit()
+        return jsonify({'message': 'Cupón creado exitosamente', 'status': 'ok'}), 201
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al crear cupón: {e}")
+        return jsonify({'message': 'Error al crear cupón', 'status': 'error'}), 500
