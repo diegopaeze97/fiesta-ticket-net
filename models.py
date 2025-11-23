@@ -384,6 +384,13 @@ class BankReferences(db.Model):
     reference = Column(String, nullable=False)
     created_at = Column(DateTime, default=db.func.current_timestamp())
 
+class DebitoInmediatoReference(db.Model):
+    __tablename__ = 'debito_inmediato_reference'
+
+    id = Column(Integer, primary_key=True)
+    reference = Column(String, nullable=False)
+    created_at = Column(DateTime, default=db.func.current_timestamp())
+
 
 
 

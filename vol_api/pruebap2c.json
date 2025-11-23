@@ -26,3 +26,44 @@ curl -k -v https://200.35.106.250/rs/verifyP2C \
   -d "{"hs": "hola", "dt": "hey"}"
 
 
+
+% curl -k -v https://localhost:8080/vol/get-debitoinmediato-code \
+  -H "Content-Type: application/json" \
+  -d '{
+    "monto": 300.5,
+    "nombreBen": "Joe Quintero",
+    "cirifBen": "14472499",
+    "tipoPersonaBen": "V",
+    "tipoDatoCuentaBen": "CELE",
+    "cuentaBen": "4129702560",
+    "codBancoBen": "0134",
+    "concepto": "TEST",
+    "trackingId":"123"
+  }'
+
+
+          required_fields = {
+            "monto": 300.5,
+            "nombreBen": "Joe Quintero",
+            "cirifBen": "14472499",
+            "tipoPersonaBen": "V",
+            "tipoDatoCuentaBen": "CELE",
+            "cuentaBen": "4129702560",
+            "codBancoBen": "0134",
+            "concepto": "TEST",
+            "trackingId":"123"
+        }
+
+
+curl -k -v https://localhost:8080/vol/c2p \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cedula": "25213842",
+    "nacionalidad": "V",
+    "telefono":"584122144339",
+    "monto": "0.05",
+    "banco": "0104",
+    "Token": "12345678"
+  }'
+
+

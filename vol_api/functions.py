@@ -164,3 +164,159 @@ def verify_p2c(payload):
     except Exception as e:
         logging.exception("Error interno: %s", e)
         return {"error": "error interno", "detail": str(e)}, 500
+
+
+def get_debitoinmediato_code(payload):
+    DEBIT_TARGET_URL = f"{_base_url}/cce/debit"
+    """
+    Construye y envía la petición de débito inmediato al endpoint /cce/debit del banco.
+    Espera un JSON con al menos:
+      - monto (number)
+      - nombreBen (string)
+      - cirifBen (string)  # identificación beneficiario
+      - tipoPersonaBen (string)  # 'V'/'E' etc.
+      - tipoDatoCuentaBen (string)  # 'CNTA' | 'CELE' | 'ALIS'
+      - cuentaBen (string)  # instrumento (cuenta, teléfono, alias)
+      - codBancoBen (string)  # codigo banco (ej '0134')
+      - concepto (string)
+    Opcional:
+      - trackingId (string)
+    Encripta dt con AES-CBC (función encrypt_aes_cbc) y envía { hs, dt }.
+    Desencripta la respuesta (si viene en dt/response/data) y la retorna.
+    """
+    try:
+        if not payload:
+            return {"status_code": 400, "error": "payload vacío"}, 400
+
+        # Validaciones mínimas
+        monto = payload.get("monto", None)
+        nombreBen = payload.get("nombreBen", None)
+        cirifBen = payload.get("cirifBen", None)
+        tipoPersonaBen = payload.get("tipoPersonaBen", None)
+        tipoDatoCuentaBen = payload.get("tipoDatoCuentaBen", None)
+        cuentaBen = payload.get("cuentaBen", None)
+        codBancoBen = payload.get("codBancoBen", None)
+        concepto = payload.get("concepto", None)
+        trackingId = payload.get("trackingId", None)
+
+        # Required checks
+        if monto is None or monto == "":
+            return {"status_code": 400, "error": "monto requerido"}, 400
+        # Allow numeric types or numeric strings, convert to string representation with dot as decimal separator
+        try:
+            # keep same representation the caller sent if it's already a string with decimals,
+            # else format float to string (avoid locale issues)
+            if isinstance(monto, str):
+                monto_str = monto
+            else:
+                monto_str = str(float(monto))
+        except Exception:
+            return {"status_code": 400, "error": "monto inválido"}, 400
+
+        required_fields = {
+            "nombreBen": nombreBen,
+            "cirifBen": cirifBen,
+            "tipoPersonaBen": tipoPersonaBen,
+            "tipoDatoCuentaBen": tipoDatoCuentaBen,
+            "cuentaBen": cuentaBen,
+            "codBancoBen": codBancoBen,
+            "concepto": concepto,
+        }
+        missing = [k for k, v in required_fields.items() if not v]
+        if missing:
+            logging.error("Missing fields: %s", missing)
+            return {"status_code": 400, "error": "faltan campos requeridos", "missing": missing}, 400
+
+        # Optionally validate tipoDatoCuentaBen allowed values
+        allowed_tipo = {"CNTA", "CELE", "ALIS"}
+        if tipoDatoCuentaBen not in allowed_tipo:
+            return {"status_code": 400, "error": "tipoDatoCuentaBen inválido", "allowed": list(allowed_tipo)}, 400
+
+        dt_obj = {
+            "monto": float(monto_str),  # bank sample shows numeric value (not string) — use numeric here
+            "nombreBen": nombreBen,
+            "cirifBen": cirifBen,
+            "tipoPersonaBen": tipoPersonaBen,
+            "tipoDatoCuentaBen": tipoDatoCuentaBen,
+            "cuentaBen": cuentaBen,
+            "codBancoBen": codBancoBen,
+            "concepto": concepto
+        }
+        if trackingId:
+            dt_obj["trackingId"] = trackingId
+
+        logging.info("Construyendo DT débito inmediato para beneficiario: %s", nombreBen)
+
+        dt_string = json.dumps(dt_obj, separators=(",", ":"), ensure_ascii=False)
+        logging.debug("DT (debito) length=%d", len(dt_string))
+
+        # Encriptar DT
+        dt_encrypted_b64 = utils.encrypt_aes_cbc(dt_string)
+
+        body = {
+            "hs": BANK_HS,
+            "dt": dt_encrypted_b64
+        }
+
+        logging.info("Enviando petición de débito inmediato a %s", DEBIT_TARGET_URL)
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(DEBIT_TARGET_URL, json=body, headers=headers, timeout=REQUEST_TIMEOUT, verify=False)
+        status_code = resp.status_code
+        text = resp.text
+        logging.info("Banco (debit) respondió status=%s body_len=%d", status_code, len(text))
+
+        # Intentar parsear JSON
+        try:
+            resp_json = resp.json()
+        except ValueError:
+            resp_json = None
+
+        decrypted = None
+        if resp_json:
+            enc_field = None
+            if "response" in resp_json:
+                enc_field = resp_json.get("response")
+            elif "dt" in resp_json:
+                enc_field = resp_json.get("dt")
+            elif "data" in resp_json and isinstance(resp_json.get("data"), str):
+                enc_field = resp_json.get("data")
+
+            if enc_field:
+                try:
+                    decrypted_str = utils.decrypt_aes_cbc_from_b64(enc_field)
+                    try:
+                        decrypted = json.loads(decrypted_str)
+                    except ValueError:
+                        decrypted = {"raw_decrypted": decrypted_str}
+                except Exception as e:
+                    logging.exception("No se pudo desencriptar respuesta de débito: %s", e)
+                    return {
+                        "status_code": status_code,
+                        "raw_response": resp_json,
+                        "error": "fallo desencriptado"
+                    }, 502
+            else:
+                # respuesta ya en claro
+                return {"status_code": status_code, "response": resp_json}, status_code
+        else:
+            # No JSON: intentar desencriptar texto crudo
+            try:
+                decrypted_str = utils.decrypt_aes_cbc_from_b64(text.strip())
+                try:
+                    decrypted = json.loads(decrypted_str)
+                except ValueError:
+                    decrypted = {"raw_decrypted": decrypted_str}
+            except Exception:
+                return {"status_code": status_code, "raw_text": text}, status_code
+
+        return {"status_code": status_code, "decrypted": decrypted}, status_code
+
+    except requests.Timeout:
+        logging.exception("Timeout al conectar con banco (debit)")
+        return {"status_code": 504, "error": "timeout al conectar con el banco"}, 504
+    except requests.exceptions.RequestException as e:
+        logging.exception("Error de conexión con el banco (debit)")
+        return {"status_code": 503, "error": "Error de conexión/red con el banco", "detail": str(e)}, 503
+    except Exception as e:
+        logging.exception("Error interno (debit): %s", e)
+        return {"status_code": 500, "error": "error interno", "detail": str(e)}, 500
