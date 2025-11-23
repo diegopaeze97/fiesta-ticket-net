@@ -1970,7 +1970,7 @@ def get_debitoinmediato_code():
         data = response[0]
 
         if data['status_code'] != 200:
-            logging.error(f"Error al enviar codigo de autorizacion: {data['error']}")
+            logging.error(f"Error al enviar codigo de autorizacion: {data}")
             return jsonify({"message": "El código de validación no pudo ser enviado, por favor verifique los datos proporcionados e intente nuevamente", "status": "error"}), 400
 
         return jsonify({"message": "código validador enviado con éxito", "status": "ok"}), 200
