@@ -779,6 +779,12 @@ def get_paymentdetails():
             "place": event_details.venue.name if event_details.venue else None
         }
 
+        user_info = {
+            "phone": customer.PhoneNumber,
+            "identification": customer.Identification,
+            "address": customer.Address
+        }
+
 
         return jsonify({
             "tickets": tickets,
@@ -789,6 +795,7 @@ def get_paymentdetails():
             "expires_at": expires_at.isoformat() if expires_at else None,
             "BsDExchangeRate": customer.BsDExchangeRate,
             "customer_phone": number_json,
+            "user_info": user_info,
             "status": "ok"
         }), 200
     except Exception as e:
@@ -1133,6 +1140,7 @@ def block_tickets():
                     payment.Status = 'pagado'
                     sale.status = 'pagado'
                     sale.StatusFinanciamiento = 'pagado'
+                    sale.paid = total_price + total_fee - total_discount
 
                     notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
 
@@ -1828,6 +1836,7 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
 @events.route('/get-debitoinmediato-code', methods=['POST'])
 @roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def get_debitoinmediato_code():
+    return jsonify({"message": "Funcionalidad en mantenimiento temporalmente", "status": "error"}), 503
     user_id = get_jwt().get("id")
     data = request.get_json()
 
