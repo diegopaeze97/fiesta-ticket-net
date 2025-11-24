@@ -779,6 +779,12 @@ def get_paymentdetails():
             "place": event_details.venue.name if event_details.venue else None
         }
 
+        user_info = {
+            "phone": customer.PhoneNumber,
+            "identification": customer.Identification,
+            "address": customer.Address
+        }
+
 
         return jsonify({
             "tickets": tickets,
@@ -789,6 +795,7 @@ def get_paymentdetails():
             "expires_at": expires_at.isoformat() if expires_at else None,
             "BsDExchangeRate": customer.BsDExchangeRate,
             "customer_phone": number_json,
+            "user_info": user_info,
             "status": "ok"
         }), 200
     except Exception as e:
@@ -1133,6 +1140,7 @@ def block_tickets():
                     payment.Status = 'pagado'
                     sale.status = 'pagado'
                     sale.StatusFinanciamiento = 'pagado'
+                    sale.paid = total_price + total_fee - total_discount
 
                     notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
 
@@ -1824,3 +1832,161 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
         logging.error(f"Error al actualizar métricas del evento: {e}")
         db.session.rollback() 
         return {"error": f"Fallo al actualizar DB: {e}", "status": "error"}
+    
+@events.route('/get-debitoinmediato-code', methods=['POST'])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+def get_debitoinmediato_code():
+    return jsonify({"message": "Funcionalidad en mantenimiento temporalmente", "status": "error"}), 503
+    user_id = get_jwt().get("id")
+    data = request.get_json()
+
+    event_id = data.get('event_id')
+    discount_code = data.get('discount_code', '')
+    payment_method = data.get("paymentMethod")
+    cedula_type = data.get("cedula_type")
+    cedula = data.get("cedula")
+    phone_number = data.get("telefono")
+    bank = data.get("banco")
+    carrito_tickets_frontend = data.get("carrito", [])
+
+    print(event_id)
+    
+
+    # ----------------------------------------------------------------
+    # 1️⃣ Validaciones iniciales
+    # ----------------------------------------------------------------
+    if not all([user_id, payment_method, event_id, cedula_type, cedula, phone_number, bank]):
+        return jsonify({"message": "Faltan parámetros obligatorios"}), 400
+    
+    if len(carrito_tickets_frontend) == 0:
+        return jsonify({"message": "El carrito de compras está vacío"}), 400
+    
+    carrito_tickets_frontend_ids = [str(ticket.get("ticket_id")) for ticket in carrito_tickets_frontend if ticket.get("ticket_id")]
+
+    # ----------------------------------------------------------------
+    # 2️⃣ Validar información del pago
+    # ----------------------------------------------------------------
+    if payment_method != "debito inmediato":
+        return jsonify({"message": "Método de pago no válido para este endpoint"}), 400
+
+    if not utils.venezuelan_phone_pattern.match(phone_number):
+        return jsonify({"message": "Número de teléfono no válido"}), 400
+    
+    lista_de_bancos_venezolanos = [banco for banco in bancos_venezolanos.keys()]
+
+    if bank.upper() not in lista_de_bancos_venezolanos:
+        return jsonify({"message": "Banco no válido"}), 400
+    
+    bank_code = bancos_venezolanos.get(bank.upper())
+
+    try:
+
+        # ----------------------------------------------------------------
+        # 3️⃣ Validar cliente
+        # ----------------------------------------------------------------
+        customer = EventsUsers.query.filter_by(CustomerID=int(user_id)).one_or_none()
+        if not customer:
+            return jsonify({"message": "Usuario no encontrado"}), 404
+
+        if customer.status.lower() == "suspended":
+            return jsonify({"message": "Su cuenta está suspendida."}), 403
+
+        if customer.status.lower() != "verified":
+            return jsonify({"message": "Su cuenta no está verificada."}), 403
+
+        # ----------------------------------------------------------------
+        # 4️⃣ Obtener tickets en carrito
+        # ----------------------------------------------------------------
+        # Validar que event_id sea numérico antes de convertirlo a int
+        if not str(event_id).isdigit():
+            return jsonify({"message": "ID de evento inválido"}), 400
+
+        tickets_en_carrito = Ticket.query.options(
+            joinedload(Ticket.seat).joinedload(Seat.section),
+            joinedload(Ticket.event)
+        ).filter(
+            Ticket.customer_id == int(customer.CustomerID),
+            Ticket.status == 'en carrito',
+            Ticket.event_id == int(event_id)
+        ).all()
+
+        if not tickets_en_carrito:
+            return jsonify({"message": "No hay tickets en el carrito"}), 404
+
+
+        if len(tickets_en_carrito) > 6:
+            return jsonify({"message": "No se pueden comprar más de 6 boletos a la vez"}), 400
+
+        event = tickets_en_carrito[0].event
+        if not event or not event.active:
+            return jsonify({"message": "Evento no encontrado o inactivo"}), 404
+
+        now = datetime.now(timezone.utc)  # Siempre en UTC
+        carrito_tickets_backend_ids = []
+        total_price = 0
+        total_discount = 0
+
+        for t in tickets_en_carrito:
+            # 1. Convierte t.expires_at a aware ASUMIENDO que es UTC
+            if t.expires_at and t.expires_at.tzinfo is None:
+                expires_at_aware = t.expires_at.replace(tzinfo=timezone.utc)
+            else:
+                expires_at_aware = t.expires_at # Ya tiene info de zona horaria
+            if not expires_at_aware or expires_at_aware < now:
+                return jsonify({"message": "Tu reserva ha caducado"}), 400
+            carrito_tickets_backend_ids.append(str(t.ticket_id))
+            total_price += t.price
+
+        # Validar que los tickets del frontend coincidan con los del backend
+        if set(carrito_tickets_frontend_ids) != set(carrito_tickets_backend_ids):
+            return jsonify({"redirect": f"/events/get-paymentdetails?query={event_id}&discount_code={discount_code}"}), 400
+        
+        
+        ### validamos el descuento
+        if discount_code:
+            discount_validation = utils.validate_discount_code(discount_code, customer, event, tickets_en_carrito, 'buy')
+            if not discount_validation.get('status'):
+                return jsonify({"message": discount_validation.get('message', 'Error en el descuento')}), 400
+            else:
+                total_discount = discount_validation.get('total_discount', 0)
+    
+        total_fee = (event.Fee or 0) * total_price / 100
+
+        if total_discount > (total_price + total_fee):
+            total_discount = total_price + total_fee
+
+        total_amount = total_price + total_fee - total_discount
+
+        MontoBS = int((total_amount) * customer.BsDExchangeRate / 100)
+
+        ENVIRONMENT = current_app.config.get('ENVIRONMENT').lower()
+        
+        if ENVIRONMENT == 'development': # para pruebas en desarrollo
+            MontoBS = MontoBS/1000
+
+        payment_data = {}
+
+        payment_data['nombreBen'] = f"{customer.FirstName} {customer.LastName}"
+        payment_data['tipoPersonaBen'] = cedula_type
+        payment_data['cirifBen'] = cedula
+        payment_data['codBancoBen'] = bank_code
+        payment_data['cuentaBen'] = phone_number
+        payment_data['tipoDatoCuentaBen'] = 'CELE' # siempre es celular
+        payment_data['concepto'] = 'FIESTA TICKET'
+        payment_data['monto'] = float(round(MontoBS/100, 2)) if ENVIRONMENT in ['production', 'development'] else 300.5
+        
+        response= vol_utils.get_debitoinmediato_code(payment_data)
+        data = response[0]
+
+        if data['status_code'] != 200:
+            logging.error(f"Error al enviar codigo de autorizacion: {data}")
+            return jsonify({"message": "El código de validación no pudo ser enviado, por favor verifique los datos proporcionados e intente nuevamente", "status": "error"}), 400
+
+        return jsonify({"message": "código validador enviado con éxito", "status": "ok"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error registrando venta o pago: {str(e)}")
+        return jsonify({"message": "Error interno al enviar codigo validador", "status": "error"}), 500
+    finally:
+        db.session.close()

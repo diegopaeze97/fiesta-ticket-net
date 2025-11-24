@@ -81,6 +81,10 @@ def createApp():
     app.config['ENVIRONMENT'] = os.getenv('ENVIRONMENT')
     app.config['REQUEST_TIMEOUT'] = int(os.getenv('REQUEST_TIMEOUT', '30'))
 
+    #google oauth
+    app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
+    app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
+
     db.init_app(app)
     jwt.init_app(app)
     socketio.init_app(app)
