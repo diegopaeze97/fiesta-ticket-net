@@ -1836,7 +1836,6 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
 @events.route('/get-debitoinmediato-code', methods=['POST'])
 @roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
 def get_debitoinmediato_code():
-    return jsonify({"message": "Funcionalidad en mantenimiento temporalmente", "status": "error"}), 503
     user_id = get_jwt().get("id")
     data = request.get_json()
 
