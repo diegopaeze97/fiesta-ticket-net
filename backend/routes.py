@@ -443,7 +443,11 @@ def logout():
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_dashboard():
     try:
-        # Single query for total users and total admins
+        # Single query for total users and counts by role
+        # NOTA: nullif(role != 'admin', True) cuenta admins porque:
+        # - Si role != 'admin' es True (no es admin), devuelve NULL
+        # - Si role != 'admin' es False (es admin), devuelve False
+        # - COUNT solo cuenta valores no-NULL, por lo que cuenta cuando role == 'admin'
         total_users, total_admins, total_tiqueteros, total_customers, total_passive_customers = db.session.query(
             func.count(EventsUsers.CustomerID),
             func.count(func.nullif(EventsUsers.role != 'admin', True)),
@@ -460,7 +464,8 @@ def load_dashboard():
                 'fullname': sale.customer.FirstName if sale.customer else '',
                 'status': sale.StatusFinanciamiento,
                 'event': sale.event.name if sale.event else '',
-                'price': round((sale.price + sale.discount - sale.discount )/100, 2),
+                # BUG FIX: Corregido cálculo de precio - debe ser price - discount + fee
+                'price': round((sale.price - sale.discount + sale.fee)/100, 2),
                 'saleLocator': sale.saleLocator,
                 'user_email': sale.customer.Email if sale.customer else ''
             })
@@ -3333,12 +3338,14 @@ def approve_abono():
 
                 try:
                 # Actualizar métricas del evento
+                # NOTA: Solo se incrementan las métricas cuando la venta se completa por primera vez
+                # gross_sales debe ser el precio total de la venta (sale.price), no el monto parcial recibido
                     stmt = (
                         update(Event)
                         .where(Event.event_id == int(event.event_id))
                         .values(
                             total_sales = func.coalesce(Event.total_sales, 0) + 1,
-                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(received) if received is not None else 0),
+                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(payment.sale.price) if payment.sale.price is not None else 0),
                             total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
                             total_discounts = func.coalesce(Event.total_discounts, 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0),
                             total_discounts_tickera = (
@@ -3706,7 +3713,11 @@ def load_users():
         roles = [r for r in roles_str.split(',') if r] if roles_str else []
         statuses = [s for s in statuses_str.split(',') if s] if statuses_str else []
 
-        # Single query for total users and totals por role (mantengo tu lógica original)
+        # Single query for total users and counts by role
+        # NOTA: nullif(role != 'admin', True) cuenta admins porque:
+        # - Si role != 'admin' es True (no es admin), devuelve NULL
+        # - Si role != 'admin' es False (es admin), devuelve False
+        # - COUNT solo cuenta valores no-NULL, por lo que cuenta cuando role == 'admin'
         total_users, total_admins, total_tiqueteros, total_customers, total_passive_customers = db.session.query(
             func.count(EventsUsers.CustomerID),
             func.count(func.nullif(EventsUsers.role != 'admin', True)),
