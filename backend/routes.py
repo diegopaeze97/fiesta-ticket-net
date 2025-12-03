@@ -3369,12 +3369,12 @@ def approve_abono():
                         .where(Event.event_id == int(event.event_id))
                         .values(
                             total_sales = func.coalesce(Event.total_sales, 0) + 1,
-                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(payment.sale.price) if payment.sale.price is not None else 0),
-                            total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
-                            total_discounts = func.coalesce(Event.total_discounts, 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0),
+                            gross_sales = func.coalesce(Event.gross_sales, 0) + func.coalesce(payment.sale.price, 0),
+                            total_fees  = func.coalesce(Event.total_fees, 0) + func.coalesce(total_fee, 0),
+                            total_discounts = func.coalesce(Event.total_discounts, 0) + func.coalesce(payment.sale.discount, 0),
                             total_discounts_tickera = (
                                 func.coalesce(Event.total_discounts_tickera, 0)
-                                + ((func.coalesce(Event.Fee, 0) * int(payment.sale.discount) / 100) if payment.sale.discount is not None else 0)
+                                + (func.coalesce(Event.Fee, 0) * func.coalesce(payment.sale.discount, 0) / 100)
                             )
                         )
                         .returning(Event.event_id)  # opcional, útil para confirmar
