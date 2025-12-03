@@ -464,7 +464,7 @@ def load_dashboard():
                 'fullname': sale.customer.FirstName if sale.customer else '',
                 'status': sale.StatusFinanciamiento,
                 'event': sale.event.name if sale.event else '',
-                # BUG FIX: Corregido cálculo de precio - debe ser price - discount + fee
+                # BUG FIX: Corregido cálculo - precio final que paga el cliente (price - discount + fee)
                 'price': round((sale.price - sale.discount + sale.fee)/100, 2),
                 'saleLocator': sale.saleLocator,
                 'user_email': sale.customer.Email if sale.customer else ''
@@ -2862,7 +2862,8 @@ def new_abono():
         fee = sale.fee if sale.fee else 0
         discount = sale.discount if sale.discount else 0
 
-        # BUG FIX: Verificar que el total pagado no exceda el total a pagar (price + fee - discount)
+        # BUG FIX: Verificar que el total pagado no exceda el total a pagar
+        # Total a pagar = (precio base + fee - descuento)
         total_due = sale.price + fee - discount
         total_after_payment = sale.paid + received
         if total_after_payment > total_due:
@@ -3273,6 +3274,10 @@ def approve_abono():
                 
                 if len(tickets_a_emitir) != len(ticket_ids):
                     return jsonify({'message': 'No se encontraron todos los tickets asociados a la venta', 'status': 'error'}), 400
+                
+                # Validar que total_price no sea cero para evitar división por cero
+                if not total_price or total_price == 0:
+                    return jsonify({'message': 'Error: el precio total de la venta no puede ser cero', 'status': 'error'}), 400
                 
                 for ticket in tickets_a_emitir:
 

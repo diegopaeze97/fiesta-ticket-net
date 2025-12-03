@@ -283,6 +283,12 @@ def handle_checkout_completed(data, config):
                 db.session.rollback()
                 return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
+            # Validar que total_price no sea cero para evitar división por cero
+            if not total_price or total_price == 0:
+                sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
+                db.session.rollback()
+                return {"error": "Error: el precio total de la venta no puede ser cero"}, 400
+
             for ticket in tickets_en_carrito:
                 discount = 0
 

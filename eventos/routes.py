@@ -1699,6 +1699,10 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
         total_discount = payment.sale.discount
         total_price = payment.sale.price
 
+        # Validar que total_price no sea cero para evitar división por cero
+        if not total_price or total_price == 0:
+            return {"message": "Error: el precio total de la venta no puede ser cero", "status": "error"}
+
         tickets = []
 
         for ticket in tickets_en_carrito:
