@@ -763,7 +763,15 @@ def update_event():
     """
     try:
         event_id = request.args.get('eventId')
-        event = Event.query.filter_by(event_id=int(event_id)).first()
+        # Validar que event_id sea un entero válido
+        if not event_id:
+            return jsonify({'message': 'Falta el parámetro eventId', 'status': 'error'}), 400
+        try:
+            event_id = int(event_id)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'ID de evento inválido', 'status': 'error'}), 400
+        
+        event = Event.query.filter_by(event_id=event_id).first()
         if not event:
             return jsonify({'message': 'Evento no encontrado', 'status': 'error'}), 404
 
@@ -1263,7 +1271,12 @@ def create_liquidation():
 
         if not event:
             return jsonify({'message': 'faltan parámetros', 'status': 'error'}), 400
-
+        
+        # Validar que event sea un entero válido
+        try:
+            event = int(event)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'ID de evento inválido', 'status': 'error'}), 400
 
         # Información de ventas
         query = Sales.query.options(
@@ -1281,7 +1294,7 @@ def create_liquidation():
         filters = []
 
         filters.append(Sales.status=='pagado')
-        filters.append(Sales.event==int(event))
+        filters.append(Sales.event==event)
         filters.append(Sales.liquidado==False)
 
         if filters:
@@ -2849,7 +2862,10 @@ def new_abono():
         fee = sale.fee if sale.fee else 0
         discount = sale.discount if sale.discount else 0
 
-        if (sale.paid + fee + received - discount) > sale.price:
+        # BUG FIX: Verificar que el total pagado no exceda el total a pagar (price + fee - discount)
+        total_due = sale.price + fee - discount
+        total_after_payment = sale.paid + received
+        if total_after_payment > total_due:
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         log_for_abono = Logs(
@@ -3021,10 +3037,11 @@ def approve_abono():
         if payment.sale.status == 'cancelado':
             return jsonify({'message': 'La venta está cancelada, no se pueden agregar abonos', 'status': 'error'}), 400
         
+        # NOTA: Todos los valores ya están en centavos (int), pero usamos int() como medida defensiva
         total_due = int(payment.sale.price + payment.sale.fee - payment.sale.discount)
         total_after_payment = int(payment.sale.paid + received)
 
-        if (total_after_payment - total_due ) > 0:  # margen de 500 centavos (5 unidades monetarias)
+        if (total_after_payment - total_due) > 0:
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         # 3️⃣ Datos auxiliares
@@ -3205,7 +3222,9 @@ def approve_abono():
             
 
             # Verificar si ya está completamente pagada
-            if int(round(payment.sale.paid + payment.sale.discount, 2)) >= int(round(payment.sale.price + payment.sale.fee, 2)):
+            # NOTA: Los valores están en centavos (integers), no necesitan rounding
+            # Se compara: monto_pagado + descuento >= precio_total + fee
+            if (payment.sale.paid + payment.sale.discount) >= (payment.sale.price + payment.sale.fee):
 
                 # ---------------------------------------------------------------
                 # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
