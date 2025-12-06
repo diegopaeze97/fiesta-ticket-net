@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Solicitud de pago - Fiesta Ticket</title>
+    <title>Pago Verificado - Fiesta Ticket</title>
 </head>
 
 <body style="margin:0; padding:0; background-color:#f0f0f0; font-family: 'Arial', sans-serif;">
@@ -16,7 +16,6 @@
 
                     <tr>
                         <td style="padding:1px; border-radius:12px;
-                            /* Degradado simulado para la franja superior */
                             background: linear-gradient(to right, #ff6b8e 0%, #a26bff 100%);">
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff"
                                 style="border-collapse:collapse; border-radius:12px;">
@@ -30,10 +29,11 @@
 
                                 <tr>
                                     <td align="center" style="padding:10px 30px;">
-                                        <h2 style="color:#333; margin-bottom:10px; font-size: 24px;">🎉
+                                        <h2 style="color:#333; margin-bottom:10px; font-size: 24px;">✈️
                                             {{sale_data['title']}}</h2>
                                         <p style="color:#a26bff; margin-top:0; font-size: 16px; font-weight: bold;">
-                                            {{sale_data['subtitle']}}</p>
+                                            {{sale_data['subtitle']}}
+                                        </p>
                                     </td>
                                 </tr>
 
@@ -43,23 +43,42 @@
                                     </td>
                                 </tr>
 
+                                <!-- SERVICIOS RESERVADOS -->
                                 <tr>
                                     <td style="padding:0 30px;">
                                         <h3 style="color:#333; font-size: 18px; margin-top:0;">Boletos Reservados:</h3>
-                                        <p style="margin:5px 0;">Evento: <strong>{{sale_data['event']}}</strong></p>
-                                        <p style="margin:5px 0;">Lugar: {{sale_data['venue']}}</p>
-                                        <p style="margin:5px 0 15px 0;">Fecha: <strong>{{sale_data['date']}} -
-                                                {{sale_data['hour']}}</strong></p>
+
+                                        <p style="margin:5px 0;">Destino / Ruta:
+                                            <strong>{{sale_data['event']}}</strong>
+                                        </p>
+
+                                        <p style="margin:5px 0;">Detalles del Servicio:
+                                            {{sale_data['venue']}}
+                                        </p>
+
+                                        <p style="margin:5px 0 15px 0;">Fecha de Viaje:
+                                            <strong>{{sale_data['date']}} - {{sale_data['hour']}}</strong>
+                                        </p>
+
                                         <div style="font-size:14px; color:#555;">
                                             {% for row in Tickets %}
                                             <p>
                                                 <span style="font-weight:bold;">
-                                                    Seccion: {{ row['section'] }} - {{ row['row'] }}{{ row['number'] }}
-                                                    ({{ (row['price']*sale_data['exchange_rate_bsd']) | round(2) }} BsD)
+                                                    {{ row['section'] }} - {{ row['row'] }}{{ row['number'] }}
+                                                    {% if sale_data['currency']!= 'usd' %}
+                                                        ({{ (row['price']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }})
+                                                    {% else %}
+                                                        ({{ row['price'] }} {{ sale_data['currency'] }})
+                                                    {% endif %}
                                                 </span>
                                             </p>
                                             {% endfor %}
                                         </div>
+
+                                        <p style="margin-top:15px; padding:12px; background:#fff7e6; border-left:4px solid #ff9500; border-radius:6px; color:#805200; font-size:14px;">
+                                            ⚠️ <strong>Importante:</strong> Este correo confirma que tu pago fue verificado, pero
+                                            <strong>NO es un boarding pass ni constituye la emisión del boleto aéreo</strong>.
+                                        </p>
                                     </td>
                                 </tr>
 
@@ -71,8 +90,8 @@
                                 </tr>
                                 <tr>
                                     <td style="padding:0 30px;">
-                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Complementos Adicionales:
-                                        </h3>
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Servicios Adicionales</h3>
+
                                         <div style="font-size:14px; color:#555; margin-bottom: 15px;">
                                             {% for addon in sale_data['add_ons'] %}
                                             <p style="margin: 5px 0;">
@@ -80,12 +99,20 @@
                                                     {{ addon['FeatureName'] }}
                                                 </span>
                                                 (Cantidad: {{ addon['Quantity'] }} x
-                                                {{ (addon['FeaturePrice']*sale_data['exchange_rate_bsd']) | round(2) }}
-                                                BsD c/u)
+                                                {% if sale_data['currency']!= 'usd' %}
+                                                    ({{ (addon['FeaturePrice']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }})
+                                                {% else %}
+                                                    ({{ addon['FeaturePrice'] }} {{ sale_data['currency'] }})
+                                                {% endif %}
+                                                {{ sale_data['currency'] }})
                                                 - Total:
                                                 <strong>
-                                                    {{ (addon['TotalPrice']*sale_data['exchange_rate_bsd']) | round(2) }}
-                                                    BsD
+                                                    {% if sale_data['currency']!= 'usd' %}
+                                                        ({{ (addon['TotalPrice']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }})
+                                                    {% else %}
+                                                        ({{ addon['TotalPrice'] }} {{ sale_data['currency'] }})
+                                                    {% endif %}
+                                                    {{ sale_data['currency'] }}
                                                 </strong>
                                             </p>
                                             {% endfor %}
@@ -100,19 +127,20 @@
                                     </td>
                                 </tr>
 
+                                <!-- DATOS DEL COMPRADOR -->
                                 <tr>
                                     <td style="padding:0 30px 15px 30px;">
                                         <h3 style="color:#333; font-size: 18px; margin-top:0;">Datos del Comprador</h3>
                                         <table width="100%" cellspacing="0" cellpadding="8"
                                             style="font-size:15px; background-color:#f9f9f9; border-radius:8px;">
                                             <tr>
-                                                <td style="border-bottom:1px solid #eee;">Nombre:</td>
+                                                <td style="border-bottom:1px solid #eee;">Nombre Completo:</td>
                                                 <td align="right" style="border-bottom:1px solid #eee;">
                                                     {{ user_data['full_name'] }}
                                                 </td>
                                             </tr>
                                             <tr>
-                                                <td style="border-bottom:1px solid #eee;">Cédula:</td>
+                                                <td style="border-bottom:1px solid #eee;">Documento:</td>
                                                 <td align="right" style="border-bottom:1px solid #eee;">
                                                     {{ user_data['identification'] }}
                                                 </td>
@@ -130,55 +158,59 @@
                                                 </td>
                                             </tr>
                                         </table>
+
+                                        <p style="margin-top:12px; color:#555; font-size:14px; line-height:1.5;">
+                                            📌 <strong>Próximo paso:</strong> El equipo de Fiesta Travel te
+                                            contactará para solicitar la información requerida por la aerolínea:
+                                            <br>– Pasaporte<br>– Fecha de nacimiento<br>– Nacionalidad<br>– Datos de
+                                            contacto<br>
+                                            y cualquier otro dato necesario para emitir tus boletos electrónicos.
+                                        </p>
+
                                     </td>
                                 </tr>
+
                                 <tr>
                                     <td style="padding: 0 30px;">
                                         <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
                                     </td>
                                 </tr>
+
+                                <!-- DETALLES DEL PAGO -->
                                 <tr>
                                     <td style="padding:0 30px 20px 30px;">
-                                        <h3 style="color:#333; font-size: 18px;">Detalles del Abono</h3>
+                                        <h3 style="color:#333; font-size: 18px;">Detalles del Pago</h3>
+
                                         <table width="100%" cellspacing="0" cellpadding="8"
                                             style="font-size:15px; background-color:#f9f9f9; border-radius:8px;">
                                             <tr>
-                                                <td style="border-bottom: 1px solid #eee;"># De Control:</td>
+                                                <td style="border-bottom: 1px solid #eee;">N° de Control:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
                                                     000000{{sale_data['sale_id']}}
                                                 </td>
                                             </tr>
                                             <tr>
-                                                <td style="border-bottom: 1px solid #eee;">Subtotal:</td>
+                                                <td style="border-bottom: 1px solid #eee;">Total Pagado:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['net_amount']}} BsD
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
-                                                <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['iva_amount']}} BsD</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="border-bottom: 1px solid #eee;">Total:</td>
-                                                <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['total_abono']}} BsD</td>
+                                                    {{sale_data['total_abono']}} {{ sale_data['currency'] }}</td>
                                             </tr>
                                         </table>
 
                                         <p style="margin:15px 0 5px 0;">Método de Pago:
                                             <strong>{{sale_data['payment_method']}}</strong>
                                         </p>
-                                        <p style="margin:5px 0 15px 0;">Referencia: {{sale_data['reference']}}</p>
+                                        <p style="margin:5px 0 15px 0;">Referencia:
+                                            {{sale_data['reference']}}
+                                        </p>
 
                                         <ul style="font-size:14px; padding-left:20px; color:#555;">
-                                            <li>Una vez confirmado el pago total, te enviaremos tus boletos electrónicos
-                                                a este correo; por favor, verifica también la bandeja de entrada y la
-                                                carpeta de spam.</li>
+                                            <li>Los boletos electrónicos serán enviados una vez completado el proceso de emisión por la aerolínea.</li>
+                                            <li>Revisa constantemente tu bandeja de entrada y carpeta de spam.</li>
                                         </ul>
                                     </td>
                                 </tr>
 
+                                <!-- LOCALIZADOR -->
                                 <tr>
                                     <td align="center" style="padding:10px 30px 30px 30px;">
                                         <p style="margin:0; color:#555; font-size:16px;">CÓDIGO DE RESERVA</p>
@@ -196,26 +228,27 @@
                                                 font-weight:bold;
                                                 font-size: 16px;
                                                 box-shadow: 0 4px 6px rgba(162, 107, 255, 0.4);">
-                                            Ver actualizaciones de mi reserva
+                                            Ver estado de mi reserva
                                         </a>
 
                                         <p style="font-size:13px; color:#555; margin-top:20px;">
-                                            ⚠️ Si deseas modificar o cancelar tu reserva, por favor contáctanos antes de
-                                            realizar cualquier pago adicional.
+                                            ⚠️ Para cambios, correcciones de datos o cancelaciones, contáctanos antes que los boletos sean emitidos.
                                         </p>
                                     </td>
                                 </tr>
 
+                                <!-- FOOTER -->
                                 <tr>
                                     <td align="center" bgcolor="#f5f5f5"
                                         style="padding:20px 30px; border-bottom-left-radius:12px; border-bottom-right-radius:12px;">
                                         <p style="font-size:12px; color:#777; line-height: 1.5;">
-                                            Si no recibimos la confirmación del abono dentro del plazo establecido, nos
-                                            reservamos
-                                            el derecho de liberar las entradas. Los boletos se emitirán únicamente una
-                                            vez verificado
-                                            el pago total. El abono realizado <strong style="color: #ff6b8e;">no es
-                                                reembolsable</strong>.
+                                            La emisión de boletos depende de la disponibilidad de la aerolínea.  
+                                            <br>
+                                            El pago realizado <strong style="color: #ff6b8e;">no es reembolsable</strong> salvo excepciones establecidas en las políticas del proveedor.
+                                            <br><br>
+                                            <strong>Este correo NO es un boarding pass.</strong>
+                                            <br>
+                                            Recibirás tus boletos electrónicos una vez emitidos oficialmente por la aerolínea.
                                         </p>
                                         <table cellspacing="0" cellpadding="5" style="margin-top:10px;">
                                             <tr>
@@ -228,19 +261,21 @@
                                             style="font-size: 14px; color: #6a0dad; font-weight: bold; margin-top: 10px;">
                                             FIESTA TICKET
                                         </p>
-                                        <p style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                        <p style="font-size: 14px; color: #555; margin-top: 10px;">
                                             LA MATUNGA, C.A. - J-500318928
                                         </p>
-                                        <p style="font-size: 14px; color: #555; font-weight: light; margin-top: 10px;">
+                                        <p style="font-size: 14px; color: #555; margin-top: 10px;">
                                             Calle Rio Caura, edificio Parque Humbolt, piso 2, ofic. 04
                                             Urb. Parque Humbolt, Caracas, estado Miranda
-                                            Zona postal 1080 / Telefono: +58 414 5229768
+                                            Zona postal 1080 / Tel: +58 414 5229768
                                         </p>
                                     </td>
                                 </tr>
+
                             </table>
                         </td>
                     </tr>
+
                 </table>
             </td>
         </tr>

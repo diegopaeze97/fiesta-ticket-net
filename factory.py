@@ -84,6 +84,7 @@ def createApp():
     #google oauth
     app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
     app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
+    app.config['REQUESTS_VERIFY'] = os.getenv('REQUESTS_VERIFY')
 
     db.init_app(app)
     jwt.init_app(app)
