@@ -5,7 +5,7 @@ import qrcode
 from io import BytesIO
 from flask_mail import Message
 from extensions import mail
-from models import EventsUsers, Discounts
+from models import EventsUsers, Discounts, PurchasedFeatures
 import logging
 import uuid
 import re
@@ -24,7 +24,7 @@ def sendqr_for_ConfirmedReservationOrFin(inscripcion, config, db, mail, user, Ti
         mail.send(msg)
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, ticket):
     try:
@@ -92,7 +92,7 @@ def sendnotification_for_PaymentStatus(config, db, mail, user, Tickets, sale_dat
         mail.send(msg)
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
     try:
@@ -180,7 +180,7 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback() 
+        #db.session.rollback() 
 
 def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
     try:
@@ -233,7 +233,7 @@ def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets, sale_data):
     try:
@@ -249,8 +249,10 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
             'identification': user.Identification or 'No registrado'
         }
 
+        template = 'pago_total_realizado.html' if not sale_data.get('is_package_tour') else 'pago_total_realizado_paquetes_turisticos.html'
+
         msg = Message(subject, sender=config["MAIL_USERNAME"], recipients=[recipient])
-        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
+        msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
         mail.send(msg)
@@ -258,7 +260,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         subject_admin = f'Notificación de compra completada para {sale_data["event"]} - Fiesta Ticket'
 
         msg = Message(subject_admin, sender=config["MAIL_USERNAME"], recipients=[config["MAIL_USERNAME"]])
-        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
+        msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
         mail.send(msg)
@@ -266,7 +268,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def update_user_gallery_newQR(img, db, ticket, s3):
     S3_BUCKET = "imagenes-fiestatravel"
@@ -406,7 +408,7 @@ def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, s
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()
+        #db.session.rollback()
 
 def validate_discount_code(discount_code, customer, event_details, tickets_en_carrito, type):
     """
@@ -537,3 +539,75 @@ email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format
 cedula_pattern = re.compile(r'^[EV]{1}\d{1,8}$')
 venezuelan_phone_pattern = re.compile(r'^(?:0412|0422|0414|0424|0416|0426)\d{7}$')
+
+usd_payment_methods = ['credit_card', 'paypal', 'stripe', 'apple_pay', 'google_pay', 'zelle', 'efectivo']
+bsd_payment_methods = ['pagomovil', 'debito_inmediato', 'c2p']
+
+def accepts_all_payment_methods(accepted_payment_methods):
+    # 1. Definición de Métodos por Divisa
+
+
+    if not accepted_payment_methods:
+        return 'all'
+
+    # 2. Normalización de la Entrada
+    
+    # Manejar si la entrada es un string (separado por comas) o una colección (list, tuple, set)
+    if isinstance(accepted_payment_methods, str):
+        if accepted_payment_methods.strip().lower() == 'all':
+            return 'all'
+        # Convierte el string separado por comas en una lista de métodos normalizados
+        items = [m.strip().lower() for m in accepted_payment_methods.split(',') if m.strip()]
+    elif isinstance(accepted_payment_methods, (list, tuple, set)):
+        # Convierte la colección en una lista de métodos normalizados
+        items = [str(m).strip().lower() for m in accepted_payment_methods if str(m).strip()]
+    else:
+        # Maneja cualquier otro tipo de entrada
+        items = [str(accepted_payment_methods).strip().lower()]
+
+    accepted_set = set(items)
+
+    # 3. Lógica de Decisión
+    
+    # Opción A: Acepta TODOS los métodos (USD + BSD)
+    all_methods = set(usd_payment_methods + bsd_payment_methods)
+    if all_methods.issubset(accepted_set):
+        return 'all'
+    
+    # Opción B: Acepta AL MENOS UN método de USD 
+    # (Se utiliza 'intersection' para verificar si hay alguna coincidencia)
+    if accepted_set.intersection(usd_payment_methods):
+        return 'usd'
+    
+    # Opción C: Acepta AL MENOS UN método de BSD
+    # (Se utiliza 'intersection' para verificar si hay alguna coincidencia)
+    if accepted_set.intersection(bsd_payment_methods):
+        return 'bsd'
+
+    # Opción D: Por defecto (Si acepta algunos, pero no todos los de una categoría completa, o ninguno)
+    return 'all'
+
+def get_accepted_payment_methods(tickets_en_carrito):
+    accepted_payment_methods = ['all']
+    
+    for ticket in tickets_en_carrito:
+        seat = ticket.seat
+        section = seat.section if seat else None
+
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == []:
+            accepted_payment_methods = section.accepted_payment_methods.lower().split(',') #lista inicial de métodos de pago aceptados
+
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods != []:
+            #intersección de métodos de pago aceptados
+            accepted_payment_methods = list(set(accepted_payment_methods).intersection(set(section.accepted_payment_methods.lower().split(','))))
+
+    return accepted_payment_methods
+
+def record_purchased_feature(sale_id, feature_id, quantity, price_per_unit):
+    purchased_feature = PurchasedFeatures(
+        SaleID=sale_id,
+        FeatureID=feature_id,
+        Quantity=quantity,
+        PurchaseAmount=price_per_unit,
+    )
+    return purchased_feature
