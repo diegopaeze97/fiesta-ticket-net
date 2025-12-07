@@ -102,17 +102,16 @@
                                                 {% if sale_data['currency']!= 'usd' %}
                                                     ({{ (addon['FeaturePrice']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }})
                                                 {% else %}
-                                                    ({{ addon['FeaturePrice'] }} {{ sale_data['currency'] }})
+                                                    ({{ addon['FeaturePrice'] | round(2) }} {{ sale_data['currency'] }})
                                                 {% endif %}
-                                                {{ sale_data['currency'] }})
+                                                )
                                                 - Total:
                                                 <strong>
                                                     {% if sale_data['currency']!= 'usd' %}
-                                                        ({{ (addon['TotalPrice']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }})
+                                                        {{ (addon['TotalPrice']*sale_data['exchange_rate_bsd']) | round(2) }} {{ sale_data['currency'] }}
                                                     {% else %}
-                                                        ({{ addon['TotalPrice'] }} {{ sale_data['currency'] }})
+                                                        {{ addon['TotalPrice'] | round(2) }} {{ sale_data['currency'] }}
                                                     {% endif %}
-                                                    {{ sale_data['currency'] }}
                                                 </strong>
                                             </p>
                                             {% endfor %}

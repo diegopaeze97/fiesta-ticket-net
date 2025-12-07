@@ -2816,7 +2816,6 @@ def customize_reservation():
         discount = sale.discount if sale.discount else 0
 
         features = []
-        purchased_features_amount = 0
 
         if sale.purchased_features:
             purchased_features = sale.purchased_features
@@ -2831,15 +2830,14 @@ def customize_reservation():
                     'FeaturePrice': round(feature_entry.PurchaseAmount/100, 2),
                     'Quantity': feature_entry.Quantity
                 })
-                purchased_features_amount += feature_entry.PurchaseAmount * feature_entry.Quantity
-
+                
         common_info = {
             'payments': payments_list,
             'items': tickets,
-            'subtotal': format_amount(sale.price + purchased_features_amount),
-            'total_price': format_amount((sale.price or 0) + fee - discount + purchased_features_amount),
+            'subtotal': format_amount(sale.price),
+            'total_price': format_amount((sale.price or 0) + fee - discount),
             'paid': format_amount(sale.paid),
-            'due': format_amount((sale.price or 0) + fee + purchased_features_amount - discount - (sale.paid or 0)),
+            'due': format_amount((sale.price or 0) + fee - discount - (sale.paid or 0)),
             'fee': round(fee / 100, 2),
             'discount': round(discount / 100, 2),
             'status': sale.status,
@@ -3411,10 +3409,10 @@ def approve_abono():
                     'venue': payment.sale.event_rel.venue.name,
                     'date': payment.sale.event_rel.date_string,
                     'hour': payment.sale.event_rel.hour_string,
-                    'price': round(payment.sale.price*exchangeRate / 10000, 2),
-                    'iva_amount': round(amount_IVA*exchangeRate / 10000, 2),
-                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
-                    'total_abono': round(received*exchangeRate / 10000, 2),
+                    'price': round(payment.sale.price*exchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
+                    'iva_amount': round(amount_IVA*exchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
+                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
+                    'total_abono': round(received*exchangeRate / 10000, 2) if currency == 'bsd' else round(received / 100, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
                     'reference': PaymentReference,

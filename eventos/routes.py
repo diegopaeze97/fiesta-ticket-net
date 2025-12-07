@@ -21,6 +21,7 @@ from models import Event
 from requests.adapters import HTTPAdapter, Retry
 import vol_api.functions as vol_utils
 import qrcode
+import json
 
 events = Blueprint('events', __name__)
 
@@ -919,6 +920,8 @@ def block_tickets():
     contact_phone = data.get("contactPhoneNumber")
     contact_phone_prefix = data.get("countryCode")
     bank = data.get("bank")
+
+    addons = request.json.get('addons', [])
     
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
@@ -1025,6 +1028,9 @@ def block_tickets():
         if not expires_at_aware or expires_at_aware < now:
             return jsonify({"message": "Tu reserva ha caducado"}), 400
         
+    total_discount = 0
+    discount_id = None
+        
     if event.from_api: #si el evento es de la API externa
 
         # ----------------------------------------------------------------
@@ -1056,8 +1062,6 @@ def block_tickets():
             return out
         
         tickets_payload = clean_tickets(tickets_en_carrito)
-        total_discount = 0
-        discount_id = None
 
         if discount_code:
             discount_code = bleach.clean(discount_code.upper(), strip=True)
@@ -1144,6 +1148,11 @@ def block_tickets():
         total_fee = sum(round((event.Fee or 0) * t.price / 100, 2) for t in tickets_en_carrito)
         ticket_str_ids = '|'.join(str(t.ticket_id) for t in tickets_en_carrito)
 
+        serializer = current_app.config['serializer']
+        token = serializer.dumps({'user_id': user_id})
+        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={token}'
+        localizador = os.urandom(3).hex().upper()
+
         # Crear registro de venta
         sale = Sales(
             ticket_ids=ticket_str_ids,
@@ -1157,10 +1166,35 @@ def block_tickets():
             fee=total_fee,
             discount=total_discount,
             ContactPhoneNumber=full_phone_number,
-            discount_ref=discount_id
+            discount_ref=discount_id,
+            saleLink = token,
+            saleLocator = localizador
         )
         db.session.add(sale)
         db.session.flush()
+
+        validated_addons = []
+        
+        if addons:
+            
+            validation_response = utils.validate_addons(addons, event, payment_method, tickets_en_carrito)
+            if isinstance(validation_response, tuple):  # Si es una respuesta de error
+                logging.info(validation_response)
+                return validation_response  # Retorna el error directamente
+            
+            validated_addons = validation_response
+
+            for addon in validated_addons:
+                purchased_feature = utils.record_purchased_feature(
+                    sale.sale_id,
+                    int(addon["FeatureID"]),
+                    int(addon["Quantity"]),
+                    int(addon["FeaturePrice"])
+                )
+                db.session.add(purchased_feature)
+                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price
+            db.session.flush()
 
         # Actualizar tickets
         for t in tickets_en_carrito:
@@ -1169,11 +1203,12 @@ def block_tickets():
             t.expires_at = None
 
         today = datetime.utcnow().date()
-        MontoBS = int((total_price + total_fee - total_discount) * customer.BsDExchangeRate / 100)
+        total_amount = total_price + total_fee - total_discount
+        MontoBS = int((total_amount) * customer.BsDExchangeRate / 100)
 
         payment = Payments(
             SaleID=sale.sale_id,
-            Amount=total_price + total_fee - total_discount,
+            Amount=total_amount,
             PaymentDate=today,
             PaymentMethod=payment_method,
             Reference=payment_reference,
@@ -1189,13 +1224,6 @@ def block_tickets():
         # ----------------------------------------------------------------
         # 7️⃣ Enviar notificación según método de pago
         # ----------------------------------------------------------------
-        serializer = current_app.config['serializer']
-        token = serializer.dumps({'user_id': user_id, 'sale_id': sale.sale_id})
-        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={token}'
-        localizador = os.urandom(3).hex().upper()
-
-        sale.saleLink = token
-        sale.saleLocator = localizador
 
         total_abono = round((total_price + total_fee - total_discount) / 100, 2)
 
@@ -1214,6 +1242,9 @@ def block_tickets():
             'reference': payment_reference or 'N/A',
             'link_reserva': qr_link,
             'localizador': localizador,
+            'add_ons': validated_addons if validated_addons else None,
+            'is_package_tour': event.type_of_event == 'paquete_turistico',
+            'currency': 'usd'
         }
 
         ENVIRONMENT = current_app.config.get('ENVIRONMENT').lower()
@@ -1231,8 +1262,6 @@ def block_tickets():
             payment_data['banco'] = bank_code
             payment_data['telefonoP'] = phone_number
             payment_data['referencia'] = payment_reference
-
-            MontoBS = MontoBS 
             
             if ENVIRONMENT == 'development': # para pruebas en desarrollo
                 MontoBS = MontoBS/1000
@@ -1247,9 +1276,9 @@ def block_tickets():
                     payment.Status = 'pagado'
                     sale.status = 'pagado'
                     sale.StatusFinanciamiento = 'pagado'
-                    sale.paid = total_price + total_fee - total_discount
+                    sale.paid = total_abono
 
-                    notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code)
+                    notify_customer = bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code, validated_addons)
 
                     if notify_customer['status'] == 'error':
                         logging.error(f"Error enviando notificación al cliente: {notify_customer['message']}")
@@ -1303,7 +1332,7 @@ def block_tickets():
             tickets.append({
                 "ticket_id": ticket.ticket_id,
                 "price": round(ticket.price/100, 2),
-                "section": section_name,
+                "section": section_name.replace('20_', ' '),
                 "row": row_name,
                 "number": number
             })
@@ -1451,7 +1480,6 @@ def view_reservation():
                     })
 
             features = []
-            purchased_features_amount = 0
 
             if sale.purchased_features:
                 purchased_features = sale.purchased_features
@@ -1466,7 +1494,6 @@ def view_reservation():
                         'FeaturePrice': round(feature_entry.PurchaseAmount/100, 2),
                         'Quantity': feature_entry.Quantity
                     })
-                    purchased_features_amount += feature_entry.PurchaseAmount * feature_entry.Quantity
 
             discount = round(sale.discount/100, 2) if sale.discount else 0
             fee = round(sale.fee/100, 2) if sale.fee else 0
@@ -1474,9 +1501,9 @@ def view_reservation():
             information['due_dates'] = [due_dates]
             information['payments'] = payments_list
             information['items'] = tickets
-            information['total_price'] = round((sale.price  + sale.fee + purchased_features_amount - sale.discount)/100, 2)
+            information['total_price'] = round((sale.price  + sale.fee - sale.discount)/100, 2)
             information['paid'] = round(sale.paid/100, 2)
-            information['due'] = round((sale.price + sale.fee  + purchased_features_amount - sale.discount - sale.paid)/100, 2)
+            information['due'] = round((sale.price + sale.fee - sale.discount - sale.paid)/100, 2)
             information['status'] = sale.status
             information['event'] = event_name
             information['venue'] = venue_name
@@ -1488,7 +1515,7 @@ def view_reservation():
             information['Fullname'] = sale.customer.FirstName + ' ' + sale.customer.LastName if sale.customer else ''
             information['fee'] = fee
             information['discount'] = discount
-            information['subtotal'] = round((sale.price+purchased_features_amount)/100, 2)
+            information['subtotal'] = round((sale.price)/100, 2)
             information['features'] = features
 
             return jsonify({'message': 'Reserva existente', 'status': 'ok', 'information': information}), 200
@@ -1734,87 +1761,15 @@ def create_stripe_checkout_session():
             logging.info("El método de pago seleccionado no está disponible para los asientos en el carrito")
             return jsonify({"message": "El método de pago seleccionado no está disponible para los asientos en el carrito"}), 400
         
+        # ----------------------------------------------------------------
+        # 2️⃣ Validar addons
+        # ----------------------------------------------------------------
+        
         validated_addons = []
         
         if addons:
             
-
-            def validate_addons(addons, event, payment_method):
-
-                total_addon_hospedaje = 0
-                total_addon_boletos = 0
-                
-                if not isinstance(addons, list):
-                    return jsonify({"message": "Formato de complementos inválido"}), 400
-                
-                addons_ids = []
-                
-                for addon in addons:
-                    if not isinstance(addon, dict):
-                        return jsonify({"message": "ID de complemento inválido"}), 400
-                    addons_ids.append(int(addon['FeatureID']))
-                    
-                additional_features_obj = event.additional_features
-
-                if not additional_features_obj:
-                    return jsonify({"message": "No se pueden agregar complementos a este evento"}), 400
-                
-                total_addon_hospedaje = sum(int(addon.get('Quantity')) for addon in addons if addon.get('FeatureCategory') == 'Hospedaje')
-                
-                for af in additional_features_obj:
-                    if af.FeatureID not in addons_ids:
-                        continue
-                    if af.Active is False:
-                        continue
-                    if af.FeaturePrice < 0:
-                       continue
-
-                    #validamos el metodo de pago:
-                    accepted_payment_methods_addon = af.accepted_payment_methods.split(',') if af.accepted_payment_methods != 'all' else ['all']
-
-                    if 'all' not in accepted_payment_methods_addon and payment_method not in accepted_payment_methods_addon:
-                        logging.info(f"El método de pago '{payment_method}' no es aceptado para el complemento '{af.FeatureName}'")
-                        continue
-
-                    #ahora validamos la cantidad de cada addon
-                    quantity = 0 #la mapeamos de addons
-                    for addon in addons:
-                        try:
-                            if int(addon.get('FeatureID')) == int(af.FeatureID):
-                                quantity = int(addon.get('Quantity'))
-                                break
-                        except Exception:
-                            continue
-
-                    if quantity < 0 or quantity > 10:
-                        logging.info("Cantidad de complemento inválida")
-                        continue
-                        
-                    feature = {
-                        "FeatureID": af.FeatureID,
-                        "FeatureName": af.FeatureName,
-                        "FeaturePrice": af.FeaturePrice,
-                        "FeatureCategory": af.FeatureCategory,
-                        "Quantity": quantity
-                    }
-
-                    if af.FeatureCategory == 'Hospedaje':
-                        total_addon_hospedaje += quantity
-                    if af.FeatureCategory == 'Boletos de concierto':
-                        total_addon_boletos += quantity
-
-                    validated_addons.append(feature)
-
-                # Validar que no se exceda el límite de hospedaje
-                if total_addon_boletos > len(tickets_en_carrito) and total_addon_boletos > total_addon_hospedaje:
-                    return jsonify({"message": "No puedes agregar más complementos de boletos de concierto que boletos comprados"}), 400
-                
-                if len(validated_addons) != len(addons_ids):
-                    return jsonify({"message": "Uno o más complementos inválidos"}), 400
-                
-                return validated_addons
-            
-            validation_response = validate_addons(addons, event, payment_method)
+            validation_response = utils.validate_addons(addons, event, payment_method, tickets_en_carrito)
             if isinstance(validation_response, tuple):  # Si es una respuesta de error
                 logging.info(validation_response)
                 return validation_response  # Retorna el error directamente
@@ -1959,7 +1914,7 @@ def create_stripe_checkout_session():
         db.session.close()
 
 
-def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, discount_code):
+def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, discount_code, validated_addons):
 
     try:
         total_discount = payment.sale.discount
@@ -2046,10 +2001,10 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             'venue': payment.sale.event_rel.venue.name,
             'date': payment.sale.event_rel.date_string,
             'hour': payment.sale.event_rel.hour_string,
-            'price': round(payment.sale.price*BsDexchangeRate / 10000, 2),
-            'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2),
-            'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2),
-            'total_abono': round(payment.Amount*BsDexchangeRate / 10000, 2),
+            'price': round(payment.sale.price*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
+            'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
+            'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
+            'total_abono': round(payment.Amount*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.Amount / 100, 2),
             'payment_method': payment.PaymentMethod,
             'payment_date': payment.PaymentDate.strftime('%d-%m-%Y'),
             'reference': payment.Reference or 'N/A',
@@ -2060,7 +2015,8 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             'title': 'Tu pago ha sido procesado exitosamente',
             'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
             'is_package_tour': payment.sale.event_rel.type_of_event == 'paquete_turistico',
-            'currency': currency
+            'currency': currency,
+            'add_ons': validated_addons if validated_addons else None,
         }
 
         discount_code = discount_code.upper() if discount_code else None

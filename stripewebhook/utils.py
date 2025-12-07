@@ -186,6 +186,9 @@ def handle_checkout_completed(data, config):
                 sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
                 logging.error(f"Error bloqueando tickets en Tickera: {str(e)}")
                 return jsonify({"message": "Error bloqueando tickets en Productora"}), 502
+            
+        received = session.get('amount_total', 0)  # en centavos
+        add_ons = session.get("metadata", {}).get("addons")
 
         # ----------------------------------------------------------------
         # 6️⃣ Aplicar cambios locales (una sola transacción)
@@ -193,9 +196,6 @@ def handle_checkout_completed(data, config):
         total_price = sum(t.price for t in tickets_en_carrito)
         total_fee = sum(round((event.Fee or 0) * t.price / 100, 2) for t in tickets_en_carrito)
         ticket_str_ids = '|'.join(str(t.ticket_id) for t in tickets_en_carrito)
-
-        received = session.get('amount_total', 0)  # en centavos
-        add_ons = session.get("metadata", {}).get("addons")
 
         serializer = config['serializer']
         token = serializer.dumps({'user_id': user_id})
@@ -216,10 +216,24 @@ def handle_checkout_completed(data, config):
             discount=amount_discount,
             saleLink = token,
             saleLocator = localizador
-            
         )
         db.session.add(sale)
         db.session.flush()
+
+        if add_ons:
+            sanitized_add_ons = add_ons.replace("'", '"')  # Reemplaza comillas simples por dobles
+            addons = json.loads(sanitized_add_ons)
+            for addon in addons:
+                purchased_feature = utils_eventos.record_purchased_feature(
+                    sale.sale_id,
+                    int(addon["FeatureID"]),
+                    int(addon["Quantity"]),
+                    int(addon["FeaturePrice"])
+                )
+                db.session.add(purchased_feature)
+                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price
+            db.session.flush()
 
         # Actualizar tickets
         for t in tickets_en_carrito:
@@ -244,19 +258,6 @@ def handle_checkout_completed(data, config):
         )
         db.session.add(payment)
         db.session.flush()
-
-        if add_ons:
-            sanitized_add_ons = add_ons.replace("'", '"')  # Reemplaza comillas simples por dobles
-            addons = json.loads(sanitized_add_ons)
-            for addon in addons:
-                purchased_feature = utils_eventos.record_purchased_feature(
-                    sale.sale_id,
-                    int(addon["FeatureID"]),
-                    int(addon["Quantity"]),
-                    int(addon["FeaturePrice"])
-                )
-                db.session.add(purchased_feature)
-            db.session.flush()
 
         # ----------------------------------------------------------------
         # 7️⃣ Enviar notificación según método de pago
@@ -374,7 +375,7 @@ def handle_checkout_completed(data, config):
                         'FeatureName': feature.FeatureName,
                         'Quantity': addon.Quantity,
                         'FeaturePrice': addon.PurchaseAmount,
-                        'TotalPrice': addon.Quantity * addon.PurchaseAmount
+                        'TotalPrice': round(addon.Quantity * addon.PurchaseAmount / 100, 2)
                     })
 
             currency = 'usd'
@@ -390,7 +391,7 @@ def handle_checkout_completed(data, config):
                 'price': round(payment.sale.price*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
                 'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
                 'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
-                'total_abono': round(received*BsDexchangeRate / 10000, 2),
+                'total_abono': round(received*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(received / 100, 2),
                 'payment_method': 'Tarjeta de Crédito',
                 'payment_date': today.strftime('%d-%m-%Y'),
                 'reference': payment_reference,

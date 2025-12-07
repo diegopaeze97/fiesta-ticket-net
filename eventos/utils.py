@@ -147,9 +147,20 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
                 )
                 # Concateno al mensaje principal
                 message_admin += detalle_ticket
-        else:
-            # Caso de contingencia si la lista estuviera vacía por alguna razón
-            message_admin += '    (No se pudo recuperar la información detallada de los boletos.)\n'
+        # ----------------------------------------------------
+        # Bloque de iteracion de addons
+        # ----------------------------------------------------
+        if sale_data.get("add_ons") and isinstance(sale_data["add_ons"], list):
+            message_admin += f'\n---\n## 🎟️ Detalles de los Addons ({len(sale_data["add_ons"])} en total)\n'
+            for i, addon in enumerate(sale_data["add_ons"], 1):
+                detalle_addon = (
+                    f'    {i}. ID: {addon["FeatureID"]} | '
+                    f'Nombre: {addon["FeatureName"]} | '
+                    f'Cantidad: {addon["Quantity"]} | '
+                    f'Precio Unitario: ${addon["FeaturePrice"]} | '
+                    f'Total: ${addon["TotalPrice"]}\n'
+                )
+                message_admin += detalle_addon
 
         # ----------------------------------------------------
         # Continuación del mensaje
@@ -589,12 +600,15 @@ def accepts_all_payment_methods(accepted_payment_methods):
 
 def get_accepted_payment_methods(tickets_en_carrito):
     accepted_payment_methods = ['all']
+
     
     for ticket in tickets_en_carrito:
         seat = ticket.seat
         section = seat.section if seat else None
 
-        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == []:
+        print(f"Ticket ID: {ticket.ticket_id}, Section Accepted Methods: {section.accepted_payment_methods if section else 'N/A'}")
+
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == ['all']:
             accepted_payment_methods = section.accepted_payment_methods.lower().split(',') #lista inicial de métodos de pago aceptados
 
         if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods != []:
@@ -611,3 +625,80 @@ def record_purchased_feature(sale_id, feature_id, quantity, price_per_unit):
         PurchaseAmount=price_per_unit,
     )
     return purchased_feature
+
+def validate_addons(addons, event, payment_method, tickets_en_carrito):
+    validated_addons = []
+
+    total_addon_hospedaje = 0
+    total_addon_boletos = 0
+    
+    if not isinstance(addons, list):
+        return jsonify({"message": "Formato de complementos inválido"}), 400
+    
+    addons_ids = []
+    
+    for addon in addons:
+        if not isinstance(addon, dict):
+            return jsonify({"message": "ID de complemento inválido"}), 400
+        addons_ids.append(int(addon['FeatureID']))
+        
+    additional_features_obj = event.additional_features
+
+    if not additional_features_obj:
+        return jsonify({"message": "No se pueden agregar complementos a este evento"}), 400
+    
+    total_addon_hospedaje = sum(int(addon.get('Quantity')) for addon in addons if addon.get('FeatureCategory') == 'Hospedaje')
+    
+    for af in additional_features_obj:
+        if af.FeatureID not in addons_ids:
+            continue
+        if af.Active is False:
+            continue
+        if af.FeaturePrice < 0:
+            continue
+
+        #validamos el metodo de pago:
+        accepted_payment_methods_addon = af.accepted_payment_methods.split(',') if af.accepted_payment_methods != 'all' else ['all']
+
+        if 'all' not in accepted_payment_methods_addon and payment_method not in accepted_payment_methods_addon:
+            logging.info(f"El método de pago '{payment_method}' no es aceptado para el complemento '{af.FeatureName}'")
+            continue
+
+        #ahora validamos la cantidad de cada addon
+        quantity = 0 #la mapeamos de addons
+        for addon in addons:
+            try:
+                if int(addon.get('FeatureID')) == int(af.FeatureID):
+                    quantity = int(addon.get('Quantity'))
+                    break
+            except Exception:
+                continue
+
+        if quantity < 0 or quantity > 10:
+            logging.info("Cantidad de complemento inválida")
+            continue
+            
+        feature = {
+            "FeatureID": af.FeatureID,
+            "FeatureName": af.FeatureName,
+            "FeaturePrice": af.FeaturePrice,
+            "FeatureCategory": af.FeatureCategory,
+            "Quantity": quantity,
+            "TotalPrice": round(quantity * af.FeaturePrice / 100, 2)
+        }
+
+        if af.FeatureCategory == 'Hospedaje':
+            total_addon_hospedaje += quantity
+        if af.FeatureCategory == 'Boletos de concierto':
+            total_addon_boletos += quantity
+
+        validated_addons.append(feature)
+
+    # Validar que no se exceda el límite de hospedaje
+    if total_addon_boletos > len(tickets_en_carrito) and total_addon_boletos > total_addon_hospedaje:
+        return jsonify({"message": "No puedes agregar más complementos de boletos de concierto que boletos comprados"}), 400
+    
+    if len(validated_addons) != len(addons_ids):
+        return jsonify({"message": "Uno o más complementos inválidos"}), 400
+    
+    return validated_addons
