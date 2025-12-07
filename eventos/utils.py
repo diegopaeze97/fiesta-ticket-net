@@ -608,10 +608,10 @@ def get_accepted_payment_methods(tickets_en_carrito):
 
         print(f"Ticket ID: {ticket.ticket_id}, Section Accepted Methods: {section.accepted_payment_methods if section else 'N/A'}")
 
-        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == []:
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == ['all']:
             accepted_payment_methods = section.accepted_payment_methods.lower().split(',') #lista inicial de métodos de pago aceptados
 
-        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods != []:
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods != ['all']:
             #intersección de métodos de pago aceptados
             accepted_payment_methods = list(set(accepted_payment_methods).intersection(set(section.accepted_payment_methods.lower().split(','))))
 
