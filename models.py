@@ -118,6 +118,9 @@ class Event(db.Model):
     duration = Column(String(50)) # Duracion del evento
     clasification = Column(String(50)) # Clasificacion del evento
     age_restriction = Column(String(50)) # Restriccion de edad
+    type_of_event = Column(String(100)) # espectaculo, vuelo, paquete turistico
+    from_api = Column(Boolean, default=False) # indica si el evento fue creado desde la API externa
+    label_inverted = Column(Boolean, default=False) # indica si el label de cada boleto debe ir invertido 3A 'false', A3 'true'
 
     
     # Relación one-to-one con la tabla Venue
@@ -142,6 +145,36 @@ class Event(db.Model):
         viewonly=True,
         lazy='dynamic'
     )
+    # Additional features relationship
+    additional_features = relationship('AdditionalFeatures', back_populates='event')
+
+class AdditionalFeatures(db.Model):
+    __tablename__ = 'additional_features'
+
+    FeatureID = Column(Integer, primary_key=True)
+    EventID = Column(Integer, ForeignKey('events_ft.event_id'), nullable=False)
+    FeatureName = Column(String, nullable=False)
+    FeatureDescription = Column(String)
+    FeaturePrice = Column(Integer, nullable=False)
+    FeatureCategory = Column(String)  # categoría del complemento: pase de comida, bebida, transporte, merch, vip, hospedaje, etc.
+    Active = Column(Boolean, default=True) # indica si el complemento está activo o no
+    accepted_payment_methods = Column(String(255))  # Métodos de pago aceptados en esta sección, 'all' para todos
+
+    # Relación con la tabla Event
+    event = relationship('Event', back_populates='additional_features')
+
+class PurchasedFeatures(db.Model):
+    __tablename__ = 'purchased_features'
+
+    PurchaseID = Column(Integer, primary_key=True)
+    SaleID = Column(Integer, ForeignKey('sales.sale_id'), nullable=False)
+    FeatureID = Column(Integer, ForeignKey('additional_features.FeatureID'), nullable=False)
+    Quantity = Column(Integer, nullable=False, default=1)
+    PurchaseAmount = Column(Integer, nullable=False)
+
+    # Relaciones
+    sale = relationship('Sales', back_populates='purchased_features')
+    feature = relationship('AdditionalFeatures', backref='additional_features')
 
 class EventUserAccess(db.Model):
     __tablename__ = 'event_user_access'  # tabla de unión con metadatos
@@ -160,6 +193,7 @@ class Section(db.Model):
     section_id = Column(Integer, primary_key=True)
     venue_id = Column(Integer, ForeignKey('venues.venue_id'), nullable=False)
     name = Column(String(100), nullable=False)
+    accepted_payment_methods = Column(String(255))  # Métodos de pago aceptados en esta sección, 'all' para todos
 
     # Relación one-to-one con la tabla Venue
     venue = relationship('Venue', back_populates='sections')
@@ -268,6 +302,9 @@ class Sales(db.Model):
     liquidation = relationship('Liquidations', back_populates='sales')
     payment = relationship('Payments', back_populates='sale', uselist=False)
     discount_rel = relationship('Discounts', back_populates='sales')
+    # Additional features relationship
+    purchased_features = relationship('PurchasedFeatures', back_populates='sale')
+
 
 
 class Logs(db.Model):
