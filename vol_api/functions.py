@@ -320,3 +320,103 @@ def get_debitoinmediato_code(payload):
     except Exception as e:
         logging.exception("Error interno (debit): %s", e)
         return {"status_code": 500, "error": "error interno", "detail": str(e)}, 500
+
+
+def validate_c2p_realtime(payment_data):
+    """
+    Valida un pago C2P (PagoMóvil) en tiempo real.
+    Esta función utiliza el endpoint verify_p2c para verificar la transacción.
+    
+    Args:
+        payment_data (dict): Diccionario con los datos del pago:
+            - fecha (str): Fecha de la transacción en formato DD/MM/YYYY
+            - banco (str): Código del banco (ej: '0102')
+            - telefonoP (str): Número de teléfono del pagador
+            - referencia (str): Referencia de la transacción
+            - monto (float): Monto de la transacción
+    
+    Returns:
+        tuple: (dict, int) - Diccionario con el resultado y código de estado HTTP
+    """
+    try:
+        # Validar que tengamos todos los campos requeridos
+        required_fields = ['fecha', 'banco', 'telefonoP', 'referencia', 'monto']
+        missing_fields = [field for field in required_fields if field not in payment_data or not payment_data[field]]
+        
+        if missing_fields:
+            logging.error(f"Campos faltantes en validate_c2p_realtime: {missing_fields}")
+            return {"status_code": 400, "error": "Faltan campos requeridos", "missing": missing_fields}, 400
+        
+        # Normalizar referencia (eliminar ceros a la izquierda)
+        referencia = str(payment_data.get('referencia', '')).strip()
+        referencia = utils.normalize_referencia(referencia)
+        payment_data['referencia'] = referencia
+        
+        # Validar formato de fecha
+        fecha = payment_data.get('fecha', '')
+        if not utils.validate_date_ddmmyyyy(fecha):
+            return {"status_code": 400, "error": "Formato de fecha inválido. Use DD/MM/YYYY"}, 400
+        
+        # Validar que el monto sea un número válido
+        try:
+            monto = float(payment_data.get('monto', 0))
+            if monto <= 0:
+                return {"status_code": 400, "error": "El monto debe ser mayor a cero"}, 400
+            payment_data['monto'] = monto
+        except (ValueError, TypeError):
+            return {"status_code": 400, "error": "Monto inválido"}, 400
+        
+        logging.info(f"Validando pago C2P en tiempo real - Referencia: {referencia}, Monto: {monto}")
+        
+        # Llamar a la función verify_p2c existente
+        response, status_code = verify_p2c(payment_data)
+        
+        # Procesar la respuesta
+        if status_code == 200:
+            # Verificar si la transacción fue exitosa
+            decrypted_data = response.get('decrypted', {})
+            
+            # El banco puede devolver diferentes estructuras, adaptarse según sea necesario
+            # Aquí asumimos que una respuesta exitosa tiene ciertos campos
+            if isinstance(decrypted_data, dict):
+                # Verificar si hay información de error en la respuesta
+                if 'error' in decrypted_data or 'errorCode' in decrypted_data:
+                    return {
+                        "status_code": 200,
+                        "validated": False,
+                        "message": "Transacción no válida o no encontrada",
+                        "details": decrypted_data
+                    }, 200
+                
+                # Si llegamos aquí, la validación fue exitosa
+                return {
+                    "status_code": 200,
+                    "validated": True,
+                    "message": "Transacción validada exitosamente",
+                    "transaction_data": decrypted_data
+                }, 200
+            else:
+                # Respuesta inesperada
+                return {
+                    "status_code": 200,
+                    "validated": False,
+                    "message": "Formato de respuesta inesperado",
+                    "details": response
+                }, 200
+        else:
+            # Error en la comunicación con el banco
+            return {
+                "status_code": status_code,
+                "validated": False,
+                "message": "Error al validar la transacción",
+                "error": response.get('error', 'Error desconocido')
+            }, status_code
+    
+    except Exception as e:
+        logging.exception(f"Error en validate_c2p_realtime: {e}")
+        return {
+            "status_code": 500,
+            "validated": False,
+            "error": "Error interno al validar transacción",
+            "detail": str(e)
+        }, 500

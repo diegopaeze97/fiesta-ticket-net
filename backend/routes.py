@@ -2417,6 +2417,9 @@ def block_tickets():
     cedula = request.json.get('cedula', '').strip()
     address = bleach.clean(request.json.get('shortAddress', ''), strip=True)
     discount_code = bleach.clean(request.json.get('discount_code', ''), strip=True)
+    
+    # Add support for addons (modernization)
+    addons = request.json.get('addons', [])
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -2424,7 +2427,7 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
     # ----------------------------------------------------------------
-    if not all([user_id, payment_method, tickera_id, tickera_api_key, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
+    if not all([user_id, payment_method, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
     if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos"]:
@@ -2469,7 +2472,7 @@ def block_tickets():
             LastName=lastname.strip(),
             Email=email,
             role='passive_customer',
-            status='unverifed',
+            status='unverified',
             CreatedBy=user_id,
             Identification=cedula,
             PhoneNumber=full_phone_number,
@@ -2479,15 +2482,16 @@ def block_tickets():
         db.session.flush()  # para obtener customer_id
 
     # ----------------------------------------------------------------
-    # 4️⃣ Obtener tickets en carrito
+    # 4️⃣ Obtener tickets seleccionados
     # ----------------------------------------------------------------
     ticket_ids = [int(s['ticket_id']) for s in selectedSeats if 'ticket_id' in s]
 
-    tickets_en_carrito = Ticket.query.filter(
-        and_(
-            Ticket.ticket_id.in_(ticket_ids),
-        )
-    ).all()  # Bloquear
+    tickets_en_carrito = Ticket.query.options(
+        joinedload(Ticket.seat).joinedload(Seat.section),
+        joinedload(Ticket.event)
+    ).filter(
+        Ticket.ticket_id.in_(ticket_ids)
+    ).all()
 
     if not tickets_en_carrito or len(tickets_en_carrito) != len(ticket_ids):
         return jsonify({"message": "Algunos tickets no están disponibles"}), 400
@@ -2498,14 +2502,10 @@ def block_tickets():
         return jsonify({"message": "Evento no encontrado o inactivo"}), 404
 
     # ----------------------------------------------------------------
-    # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
+    # 5️⃣ Validar y preparar descuentos
     # ----------------------------------------------------------------
-    url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
-
-    # Normalizar event id
-    event_id = str(event.event_id_provider).strip()
-    if not event_id or not event_id.isdigit() or len(event_id) > 64:
-        raise ValueError("event_id inválido")
+    total_discount = 0
+    discount_id = None
 
     # Sanitizar tickets_en_carrito
     def clean_tickets(list_in):
@@ -2513,20 +2513,16 @@ def block_tickets():
         if not list_in:
             return out
         for i, t in enumerate(list_in):
-            tid = t.ticket_id_provider
+            tid = t.ticket_id_provider if event.from_api else t.ticket_id
             price = t.price
             try:
                 tid_i = int(tid)
             except Exception:
                 continue
-            # Price -> Decimal, >= 0
             out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": str(0)})
             if len(out) >= 200:
                 break
         return out
-
-    total_discount = 0
-    discount_id = None
 
     if discount_code:
         discount_code = bleach.clean(discount_code.upper(), strip=True)
@@ -2539,74 +2535,85 @@ def block_tickets():
     else:
         tickets_payload = clean_tickets(tickets_en_carrito)
 
-    if not tickets_payload:
-        raise ValueError("No hay tickets válidos para bloquear")
+    # ----------------------------------------------------------------
+    # 6️⃣ Bloquear en Tickera (solo si event.from_api == True)
+    # ----------------------------------------------------------------
+    if event.from_api:
+        if not all([tickera_id, tickera_api_key]):
+            return jsonify({"message": "Configuración de API externa incompleta"}), 500
+            
+        url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
 
-    payload = {
-        "event": event_id,
-        "tickets": tickets_payload,
-        "type_of_sale": "admin_sale"
-    }
+        # Normalizar event id
+        event_id = str(event.event_id_provider).strip()
+        if not event_id or not event_id.isdigit() or len(event_id) > 64:
+            raise ValueError("event_id inválido")
 
-    # Session con retries
-    session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
-    )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
+        if not tickets_payload:
+            raise ValueError("No hay tickets válidos para bloquear")
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "FiestaTickets/1.0",
-        "X-Tickera-Id": str(tickera_id),
-        "X-Tickera-Api-Key": str(tickera_api_key)
-    }
+        payload = {
+            "event": event_id,
+            "tickets": tickets_payload,
+            "type_of_sale": "admin_sale"
+        }
 
-    verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
-    # Initialize holder so later local DB logic can run using this response if needed
-    try:
-        response = session.post(
-            url_block,
-            json=payload,
-            headers=headers,
-            timeout=(5, 30),
-            allow_redirects=False,
-            verify=verify
+        # Session con retries
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
         )
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
 
-        content_type = response.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            logging.error("Respuesta inesperada de Tickera en block-tickets: Content-Type no es JSON")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "FiestaTickets/1.0",
+            "X-Tickera-Id": str(tickera_id),
+            "X-Tickera-Api-Key": str(tickera_api_key)
+        }
+
+        verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
+        try:
+            response = session.post(
+                url_block,
+                json=payload,
+                headers=headers,
+                timeout=(5, 30),
+                allow_redirects=False,
+                verify=verify
+            )
+
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                logging.error("Respuesta inesperada de Tickera en block-tickets: Content-Type no es JSON")
+                response.raise_for_status()
+
             response.raise_for_status()
 
-        # Levantar para status >= 400
-        response.raise_for_status()
+            try:
+                data = response.json()
+            except ValueError:
+                logging.error("JSON inválido en respuesta de block-tickets")
+                raise
 
-        try:
-            data = response.json()
-        except ValueError:
-            logging.error("JSON inválido en respuesta de block-tickets")
+            block_response = data
+
+        except requests.exceptions.RequestException:
+            logging.exception("Error comunicándose con Tickera (block-tickets)")
             raise
-
-        # store the response instead of returning early so local changes can be applied
-        block_response = data
-
-    except requests.exceptions.RequestException:
-        logging.exception("Error comunicándose con Tickera (block-tickets)")
-        raise
-    finally:
-        try:
-            session.close()
-        except Exception:
-            pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
     # ----------------------------------------------------------------
-    # 6️⃣ Aplicar cambios locales (una sola transacción)
+    # 7️⃣ Aplicar cambios locales (una sola transacción)
     # ----------------------------------------------------------------
     try:
         total_price = sum(t.price for t in tickets_en_carrito)
@@ -2632,6 +2639,31 @@ def block_tickets():
         db.session.add(sale)
         db.session.flush()
 
+        # ----------------------------------------------------------------
+        # 8️⃣ Validar y registrar addons (modernización)
+        # ----------------------------------------------------------------
+        validated_addons = []
+        
+        if addons:
+            validation_response = utils.validate_addons(addons, event, payment_method, tickets_en_carrito)
+            if isinstance(validation_response, tuple):  # Si es una respuesta de error
+                logging.info(validation_response)
+                return validation_response  # Retorna el error directamente
+            
+            validated_addons = validation_response
+
+            for addon in validated_addons:
+                purchased_feature = utils.record_purchased_feature(
+                    sale.sale_id,
+                    int(addon["FeatureID"]),
+                    int(addon["Quantity"]),
+                    int(addon["FeaturePrice"])
+                )
+                db.session.add(purchased_feature)
+                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price
+            db.session.flush()
+
         # Actualizar tickets
         for t in tickets_en_carrito:
             t.status = payment_status
@@ -2655,7 +2687,7 @@ def block_tickets():
         db.session.add(payment)
 
         # ----------------------------------------------------------------
-        # 7️⃣ Enviar notificación según método de pago
+        # 9️⃣ Enviar notificación según método de pago
         # ----------------------------------------------------------------
         serializer = current_app.config['serializer']
         token = serializer.dumps({'user_id': user_id, 'sale_id': sale.sale_id})
@@ -2671,9 +2703,9 @@ def block_tickets():
             'venue': sale.event_rel.venue.name,
             'date': sale.event_rel.date_string,
             'hour': sale.event_rel.hour_string,
-            'price': round(sale.price / 10000, 2),
+            'price': round(sale.price / 100, 2),
             'discount': round(sale.discount / 100, 2),
-            'fee': round(sale.fee / 10000, 2),
+            'fee': round(sale.fee / 100, 2),
             'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
             'due': round(0, 2),
             'payment_method': payment_method.capitalize(),
@@ -2684,6 +2716,9 @@ def block_tickets():
             'status': 'pagado',
             'title': 'Estamos procesando tu abono',
             'subtitle': 'Te notificaremos una vez que haya sido aprobado',
+            'add_ons': validated_addons if validated_addons else None,
+            'is_package_tour': event.type_of_event == 'paquete_turistico',
+            'currency': 'usd'
         } 
         
         if total_discount > 0:
