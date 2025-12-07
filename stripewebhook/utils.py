@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload, load_only
 import requests
 import os
 import eventos.utils as utils_eventos
+import json
 
 
 
@@ -114,12 +115,14 @@ def handle_checkout_completed(data, config):
         now = datetime.now(timezone.utc)  # Siempre en UTC
         Tickets = []
         for t in tickets_en_carrito:
+            section=t.seat.section.name
+            section=section.replace("20_"," ")
             ticket = {
                 'ticket_id_provider': t.ticket_id_provider,
                 'ticket_id': t.ticket_id,
                 'row': t.seat.row,
                 'number': t.seat.number,
-                'section': t.seat.section.name,
+                'section': section,
                 'event': t.price,
                 'price': round(t.price / 100, 2),
                 'discount': 0
@@ -163,26 +166,29 @@ def handle_checkout_completed(data, config):
             return jsonify({"message": "Error en el monto de descuento aplicado"}), 400
             
 
+        if event.from_api: #si el evento es de la API externa
+            # ----------------------------------------------------------------
+            # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
+            # ----------------------------------------------------------------
+            url_block = f"{config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
+            payload = {
+                "event": event.event_id_provider,
+                "tickets": tickets_payload,
+                "tickera_id": tickera_id,
+                "tickera_api_key": tickera_api_key,
+                "type_of_sale": "user_sale"
+            }
 
-        # ----------------------------------------------------------------
-        # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
-        # ----------------------------------------------------------------
-        url_block = f"{config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
-        payload = {
-            "event": event.event_id_provider,
-            "tickets": tickets_payload,
-            "tickera_id": tickera_id,
-            "tickera_api_key": tickera_api_key,
-            "type_of_sale": "user_sale"
-        }
-
-        try:
-            response_block = requests.post(url_block, json=payload, timeout=30)
-            response_block.raise_for_status()
-        except Exception as e:
-            sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
-            logging.error(f"Error bloqueando tickets en Tickera: {str(e)}")
-            return jsonify({"message": "Error bloqueando tickets en Productora"}), 502
+            try:
+                response_block = requests.post(url_block, json=payload, timeout=30)
+                response_block.raise_for_status()
+            except Exception as e:
+                sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
+                logging.error(f"Error bloqueando tickets en Tickera: {str(e)}")
+                return jsonify({"message": "Error bloqueando tickets en Productora"}), 502
+            
+        received = session.get('amount_total', 0)  # en centavos
+        add_ons = session.get("metadata", {}).get("addons")
 
         # ----------------------------------------------------------------
         # 6️⃣ Aplicar cambios locales (una sola transacción)
@@ -190,8 +196,6 @@ def handle_checkout_completed(data, config):
         total_price = sum(t.price for t in tickets_en_carrito)
         total_fee = sum(round((event.Fee or 0) * t.price / 100, 2) for t in tickets_en_carrito)
         ticket_str_ids = '|'.join(str(t.ticket_id) for t in tickets_en_carrito)
-
-        received = session.get('amount_total', 0)  # en centavos
 
         serializer = config['serializer']
         token = serializer.dumps({'user_id': user_id})
@@ -212,10 +216,25 @@ def handle_checkout_completed(data, config):
             discount=amount_discount,
             saleLink = token,
             saleLocator = localizador
-            
+
         )
         db.session.add(sale)
         db.session.flush()
+
+        if add_ons:
+            sanitized_add_ons = add_ons.replace("'", '"')  # Reemplaza comillas simples por dobles
+            addons = json.loads(sanitized_add_ons)
+            for addon in addons:
+                purchased_feature = utils_eventos.record_purchased_feature(
+                    sale.sale_id,
+                    int(addon["FeatureID"]),
+                    int(addon["Quantity"]),
+                    int(addon["FeaturePrice"])
+                )
+                db.session.add(purchased_feature)
+                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price
+            db.session.flush()
 
         # Actualizar tickets
         for t in tickets_en_carrito:
@@ -321,10 +340,13 @@ def handle_checkout_completed(data, config):
 
                 qr_link = f'{config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
 
+                section=ticket.seat.section.name
+                section=section.replace("20_"," ")
+
                 sale_data = {
                     'row': ticket.seat.row,
                     'number': ticket.seat.number,
-                    'section': ticket.seat.section.name,
+                    'section': section,
                     'event': ticket.event.name,
                     'venue': ticket.event.venue.name,
                     'date': ticket.event.date_string,
@@ -337,11 +359,29 @@ def handle_checkout_completed(data, config):
                     'localizador': localizador
                 }
 
-                utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
+                if event.type_of_event != 'paquete_turistico':
+                    utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
 
             IVA = config.get('IVA_PERCENTAGE', 0) / 100
             amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
             amount_IVA = received - amount_no_IVA
+
+            addons = None
+
+            if payment.sale.purchased_features:
+                addons = []
+                for addon in payment.sale.purchased_features:
+                    feature = addon.feature
+                    addons.append({
+                        'FeatureName': feature.FeatureName,
+                        'Quantity': addon.Quantity,
+                        'FeaturePrice': addon.PurchaseAmount,
+                        'TotalPrice': round(addon.Quantity * addon.PurchaseAmount / 100, 2)
+                    })
+
+            currency = 'usd'
+
+            print(Tickets)
 
             sale_data = {
                 'sale_id': str(payment.sale.sale_id),
@@ -349,10 +389,10 @@ def handle_checkout_completed(data, config):
                 'venue': payment.sale.event_rel.venue.name,
                 'date': payment.sale.event_rel.date_string,
                 'hour': payment.sale.event_rel.hour_string,
-                'price': round(payment.sale.price*BsDexchangeRate / 10000, 2),
-                'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2),
-                'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2),
-                'total_abono': round(received*BsDexchangeRate / 10000, 2),
+                'price': round(payment.sale.price*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
+                'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
+                'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
+                'total_abono': round(received*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(received / 100, 2),
                 'payment_method': 'Tarjeta de Crédito',
                 'payment_date': today.strftime('%d-%m-%Y'),
                 'reference': payment_reference,
@@ -361,7 +401,10 @@ def handle_checkout_completed(data, config):
                 'exchange_rate_bsd': round(BsDexchangeRate/100, 2),
                 'status': 'aprobado',
                 'title': 'Tu pago ha sido procesado exitosamente',
-                'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
+                'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
+                'add_ons': addons if addons else None,
+                'is_package_tour': event.type_of_event == 'paquete_turistico',
+                'currency': currency
             }
             utils_eventos.sendnotification_for_CompletedPaymentStatus(config, db, mail, customer, Tickets, sale_data)
 

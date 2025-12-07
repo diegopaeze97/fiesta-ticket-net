@@ -5,7 +5,7 @@ import qrcode
 from io import BytesIO
 from flask_mail import Message
 from extensions import mail
-from models import EventsUsers, Discounts
+from models import EventsUsers, Discounts, PurchasedFeatures
 import logging
 import uuid
 import re
@@ -24,7 +24,7 @@ def sendqr_for_ConfirmedReservationOrFin(inscripcion, config, db, mail, user, Ti
         mail.send(msg)
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendqr_for_SuccessfulTicketEmission(config, db, mail, user, sale_data, s3, ticket):
     try:
@@ -92,7 +92,7 @@ def sendnotification_for_PaymentStatus(config, db, mail, user, Tickets, sale_dat
         mail.send(msg)
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
     try:
@@ -147,9 +147,20 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
                 )
                 # Concateno al mensaje principal
                 message_admin += detalle_ticket
-        else:
-            # Caso de contingencia si la lista estuviera vacía por alguna razón
-            message_admin += '    (No se pudo recuperar la información detallada de los boletos.)\n'
+        # ----------------------------------------------------
+        # Bloque de iteracion de addons
+        # ----------------------------------------------------
+        if sale_data.get("add_ons") and isinstance(sale_data["add_ons"], list):
+            message_admin += f'\n---\n## 🎟️ Detalles de los Addons ({len(sale_data["add_ons"])} en total)\n'
+            for i, addon in enumerate(sale_data["add_ons"], 1):
+                detalle_addon = (
+                    f'    {i}. ID: {addon["FeatureID"]} | '
+                    f'Nombre: {addon["FeatureName"]} | '
+                    f'Cantidad: {addon["Quantity"]} | '
+                    f'Precio Unitario: ${addon["FeaturePrice"]} | '
+                    f'Total: ${addon["TotalPrice"]}\n'
+                )
+                message_admin += detalle_addon
 
         # ----------------------------------------------------
         # Continuación del mensaje
@@ -180,7 +191,7 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback() 
+        #db.session.rollback() 
 
 def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
     try:
@@ -233,7 +244,7 @@ def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets, sale_data):
     try:
@@ -249,8 +260,10 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
             'identification': user.Identification or 'No registrado'
         }
 
+        template = 'pago_total_realizado.html' if not sale_data.get('is_package_tour') else 'pago_total_realizado_paquetes_turisticos.html'
+
         msg = Message(subject, sender=config["MAIL_USERNAME"], recipients=[recipient])
-        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
+        msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
         mail.send(msg)
@@ -258,7 +271,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         subject_admin = f'Notificación de compra completada para {sale_data["event"]} - Fiesta Ticket'
 
         msg = Message(subject_admin, sender=config["MAIL_USERNAME"], recipients=[config["MAIL_USERNAME"]])
-        msg_html = render_template('pago_total_realizado.html', Tickets=Tickets, sale_data=sale_data, user_data=user_data)
+        msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
         mail.send(msg)
@@ -266,7 +279,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()   
+        #db.session.rollback()   
 
 def update_user_gallery_newQR(img, db, ticket, s3):
     S3_BUCKET = "imagenes-fiestatravel"
@@ -406,7 +419,7 @@ def notify_admins_automatic_pagomovil_verification(config, db, mail, customer, s
 
     except Exception as e:
         logging.error(f"Error sending email: {e}")
-        db.session.rollback()
+        #db.session.rollback()
 
 def validate_discount_code(discount_code, customer, event_details, tickets_en_carrito, type):
     """
@@ -537,3 +550,155 @@ email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format
 cedula_pattern = re.compile(r'^[EV]{1}\d{1,8}$')
 venezuelan_phone_pattern = re.compile(r'^(?:0412|0422|0414|0424|0416|0426)\d{7}$')
+
+usd_payment_methods = ['credit_card', 'paypal', 'stripe', 'apple_pay', 'google_pay', 'zelle', 'efectivo']
+bsd_payment_methods = ['pagomovil', 'debito_inmediato', 'c2p']
+
+def accepts_all_payment_methods(accepted_payment_methods):
+    # 1. Definición de Métodos por Divisa
+
+
+    if not accepted_payment_methods:
+        return 'all'
+
+    # 2. Normalización de la Entrada
+    
+    # Manejar si la entrada es un string (separado por comas) o una colección (list, tuple, set)
+    if isinstance(accepted_payment_methods, str):
+        if accepted_payment_methods.strip().lower() == 'all':
+            return 'all'
+        # Convierte el string separado por comas en una lista de métodos normalizados
+        items = [m.strip().lower() for m in accepted_payment_methods.split(',') if m.strip()]
+    elif isinstance(accepted_payment_methods, (list, tuple, set)):
+        # Convierte la colección en una lista de métodos normalizados
+        items = [str(m).strip().lower() for m in accepted_payment_methods if str(m).strip()]
+    else:
+        # Maneja cualquier otro tipo de entrada
+        items = [str(accepted_payment_methods).strip().lower()]
+
+    accepted_set = set(items)
+
+    # 3. Lógica de Decisión
+    
+    # Opción A: Acepta TODOS los métodos (USD + BSD)
+    all_methods = set(usd_payment_methods + bsd_payment_methods)
+    if all_methods.issubset(accepted_set):
+        return 'all'
+    
+    # Opción B: Acepta AL MENOS UN método de USD 
+    # (Se utiliza 'intersection' para verificar si hay alguna coincidencia)
+    if accepted_set.intersection(usd_payment_methods):
+        return 'usd'
+    
+    # Opción C: Acepta AL MENOS UN método de BSD
+    # (Se utiliza 'intersection' para verificar si hay alguna coincidencia)
+    if accepted_set.intersection(bsd_payment_methods):
+        return 'bsd'
+
+    # Opción D: Por defecto (Si acepta algunos, pero no todos los de una categoría completa, o ninguno)
+    return 'all'
+
+def get_accepted_payment_methods(tickets_en_carrito):
+    accepted_payment_methods = ['all']
+
+    
+    for ticket in tickets_en_carrito:
+        seat = ticket.seat
+        section = seat.section if seat else None
+
+        print(f"Ticket ID: {ticket.ticket_id}, Section Accepted Methods: {section.accepted_payment_methods if section else 'N/A'}")
+
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods == []:
+            accepted_payment_methods = section.accepted_payment_methods.lower().split(',') #lista inicial de métodos de pago aceptados
+
+        if section and section.accepted_payment_methods and section.accepted_payment_methods.lower() != 'all' and accepted_payment_methods != []:
+            #intersección de métodos de pago aceptados
+            accepted_payment_methods = list(set(accepted_payment_methods).intersection(set(section.accepted_payment_methods.lower().split(','))))
+
+    return accepted_payment_methods
+
+def record_purchased_feature(sale_id, feature_id, quantity, price_per_unit):
+    purchased_feature = PurchasedFeatures(
+        SaleID=sale_id,
+        FeatureID=feature_id,
+        Quantity=quantity,
+        PurchaseAmount=price_per_unit,
+    )
+    return purchased_feature
+
+def validate_addons(addons, event, payment_method, tickets_en_carrito):
+    validated_addons = []
+
+    total_addon_hospedaje = 0
+    total_addon_boletos = 0
+    
+    if not isinstance(addons, list):
+        return jsonify({"message": "Formato de complementos inválido"}), 400
+    
+    addons_ids = []
+    
+    for addon in addons:
+        if not isinstance(addon, dict):
+            return jsonify({"message": "ID de complemento inválido"}), 400
+        addons_ids.append(int(addon['FeatureID']))
+        
+    additional_features_obj = event.additional_features
+
+    if not additional_features_obj:
+        return jsonify({"message": "No se pueden agregar complementos a este evento"}), 400
+    
+    total_addon_hospedaje = sum(int(addon.get('Quantity')) for addon in addons if addon.get('FeatureCategory') == 'Hospedaje')
+    
+    for af in additional_features_obj:
+        if af.FeatureID not in addons_ids:
+            continue
+        if af.Active is False:
+            continue
+        if af.FeaturePrice < 0:
+            continue
+
+        #validamos el metodo de pago:
+        accepted_payment_methods_addon = af.accepted_payment_methods.split(',') if af.accepted_payment_methods != 'all' else ['all']
+
+        if 'all' not in accepted_payment_methods_addon and payment_method not in accepted_payment_methods_addon:
+            logging.info(f"El método de pago '{payment_method}' no es aceptado para el complemento '{af.FeatureName}'")
+            continue
+
+        #ahora validamos la cantidad de cada addon
+        quantity = 0 #la mapeamos de addons
+        for addon in addons:
+            try:
+                if int(addon.get('FeatureID')) == int(af.FeatureID):
+                    quantity = int(addon.get('Quantity'))
+                    break
+            except Exception:
+                continue
+
+        if quantity < 0 or quantity > 10:
+            logging.info("Cantidad de complemento inválida")
+            continue
+            
+        feature = {
+            "FeatureID": af.FeatureID,
+            "FeatureName": af.FeatureName,
+            "FeaturePrice": af.FeaturePrice,
+            "FeatureCategory": af.FeatureCategory,
+            "Quantity": quantity,
+            "TotalPrice": round(quantity * af.FeaturePrice / 100, 2)
+        }
+
+        if af.FeatureCategory == 'Hospedaje':
+            total_addon_hospedaje += quantity
+        if af.FeatureCategory == 'Boletos de concierto':
+            total_addon_boletos += quantity
+
+        validated_addons.append(feature)
+
+    # Validar que no se exceda el límite de hospedaje
+    if total_addon_boletos > len(tickets_en_carrito) and total_addon_boletos > total_addon_hospedaje:
+        return jsonify({"message": "No puedes agregar más complementos de boletos de concierto que boletos comprados"}), 400
+    
+    if len(validated_addons) != len(addons_ids):
+        return jsonify({"message": "Uno o más complementos inválidos"}), 400
+    
+    return validated_addons
