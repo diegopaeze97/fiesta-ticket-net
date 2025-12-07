@@ -3328,6 +3328,21 @@ def approve_abono():
                 tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
                 total_price = payment.sale.price
 
+                #chequeamos si hay addons
+                add_ons = payment.sale.purchased_features
+                add_ons_list = []
+                if add_ons:
+                    for addon in add_ons:
+                        feature = addon.feature
+                        if feature:
+                            add_ons_list.append({
+                                'FeatureName': feature.FeatureName,
+                                'FeatureDescription': feature.FeatureDescription,
+                                'FeaturePrice': round(addon.PurchaseAmount/100, 2),
+                                'TotalPrice': round((addon.PurchaseAmount * addon.Quantity)/100, 2),
+                                'Quantity': addon.Quantity
+                            })
+
                 if not tickets_a_emitir:
                     return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
                 
@@ -3423,7 +3438,8 @@ def approve_abono():
                     'title': 'Tu pago ha sido procesado exitosamente',
                     'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
                     'is_package_tour': payment.sale.event_rel.type_of_event == 'paquete_turistico',
-                    'currency': currency
+                    'currency': currency,
+                    'add_ons': add_ons_list
                 }
 
                 try:
