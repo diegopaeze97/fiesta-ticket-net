@@ -2220,3 +2220,130 @@ def get_debitoinmediato_code():
         return jsonify({"message": "Error interno al enviar codigo validador", "status": "error"}), 500
     finally:
         db.session.close()
+
+@events.route('/validate-c2p', methods=['POST'])
+@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+def validate_c2p():
+    """
+    Endpoint para validar transacciones de PagoMóvil C2P en tiempo real.
+    
+    Este endpoint recibe los datos de una transacción de PagoMóvil y valida
+    su autenticidad consultando con el banco en tiempo real.
+    
+    Request Body:
+    {
+        "referencia": "123456",      # Referencia de la transacción
+        "fecha": "31/12/2024",       # Fecha en formato DD/MM/YYYY
+        "banco": "0102",             # Código del banco
+        "telefono": "04121234567",   # Teléfono del pagador
+        "monto": 100.50              # Monto de la transacción
+    }
+    
+    Returns:
+        JSON con el resultado de la validación
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        
+        # Extraer parámetros
+        referencia = data.get("referencia", "").strip()
+        fecha = data.get("fecha", "").strip()
+        banco = data.get("banco", "").strip()
+        telefono = data.get("telefono", "").strip()
+        monto = data.get("monto")
+        
+        # Validaciones básicas
+        if not all([referencia, fecha, banco, telefono, monto]):
+            missing = []
+            if not referencia:
+                missing.append("referencia")
+            if not fecha:
+                missing.append("fecha")
+            if not banco:
+                missing.append("banco")
+            if not telefono:
+                missing.append("telefono")
+            if not monto:
+                missing.append("monto")
+            
+            return jsonify({
+                "status": "error",
+                "message": "Faltan parámetros obligatorios",
+                "missing": missing
+            }), 400
+        
+        # Validar formato del teléfono (debe ser un número venezolano)
+        if not utils.venezuelan_phone_pattern.match(telefono):
+            return jsonify({
+                "status": "error",
+                "message": "Número de teléfono no válido. Debe ser un número venezolano."
+            }), 400
+        
+        # Validar que el banco esté en la lista de bancos venezolanos
+        if banco.upper() not in [code for code in bancos_venezolanos.values()]:
+            return jsonify({
+                "status": "error",
+                "message": "Código de banco no válido"
+            }), 400
+        
+        # Validar que el monto sea un número positivo
+        try:
+            monto_float = float(monto)
+            if monto_float <= 0:
+                return jsonify({
+                    "status": "error",
+                    "message": "El monto debe ser mayor a cero"
+                }), 400
+        except (ValueError, TypeError):
+            return jsonify({
+                "status": "error",
+                "message": "Monto inválido"
+            }), 400
+        
+        # Preparar datos para la validación
+        payment_data = {
+            "referencia": referencia,
+            "fecha": fecha,
+            "banco": banco,
+            "telefonoP": telefono,
+            "monto": monto_float
+        }
+        
+        logging.info(f"Validando transacción C2P - Referencia: {referencia}, Monto: {monto_float}")
+        
+        # Llamar a la función de validación en vol_api.functions
+        validation_result, status_code = vol_utils.validate_c2p_realtime(payment_data)
+        
+        # Procesar el resultado
+        if status_code == 200 and validation_result.get("validated"):
+            # Transacción válida
+            return jsonify({
+                "status": "ok",
+                "validated": True,
+                "message": "Transacción validada exitosamente",
+                "transaction_data": validation_result.get("transaction_data", {})
+            }), 200
+        elif status_code == 200 and not validation_result.get("validated"):
+            # Transacción no válida o no encontrada
+            return jsonify({
+                "status": "error",
+                "validated": False,
+                "message": validation_result.get("message", "Transacción no válida o no encontrada"),
+                "details": validation_result.get("details", {})
+            }), 400
+        else:
+            # Error en la validación
+            return jsonify({
+                "status": "error",
+                "validated": False,
+                "message": validation_result.get("message", "Error al validar la transacción"),
+                "error": validation_result.get("error", "Error desconocido")
+            }), status_code
+    
+    except Exception as e:
+        logging.exception(f"Error en validate-c2p: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Error interno al validar transacción",
+            "detail": str(e)
+        }), 500
