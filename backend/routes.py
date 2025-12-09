@@ -1827,8 +1827,9 @@ def load_available_tickets():
         date, time = ('', '')
         tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
         tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+        payment_method = request.args.get('payment_method', '')
 
-        if not all([event_name, venue, date_and_time, tickera_id, tickera_api_key]):
+        if not all([event_name, venue, date_and_time, payment_method, tickera_id, tickera_api_key]):
             return jsonify({"message": "Faltan parámetros"}), 400
         
         if ' - ' in date_and_time:
@@ -1843,7 +1844,7 @@ def load_available_tickets():
                 Event.event_id,
                 Event.name,
                 Event.financiamientos,
-                Event.Type
+                Event.Type,
             ))
             .filter(
                 and_(
@@ -1861,6 +1862,25 @@ def load_available_tickets():
         
         if event.active != True:
             return jsonify({"message": "El evento no está activo"}), 400
+        
+        #obtenemos las características adicionales del evento
+        additional_features_list = []
+        if event.additional_features:
+            for feature in event.additional_features:
+
+                if feature.Active != True:
+                    continue
+                accepted_payments = feature.accepted_payment_methods.split(',') if feature.accepted_payment_methods else ['all']
+                if accepted_payments != ['all'] and payment_method.lower() not in [method.strip().lower() for method in accepted_payments]:
+                    continue
+                additional_features_list.append({
+                    "FeatureID": feature.FeatureID,
+                    "FeatureName": feature.FeatureName,
+                    "FeatureDescription": feature.FeatureDescription,   
+                    "FeaturePrice": feature.FeaturePrice,
+                    "FeatureCategory": feature.FeatureCategory,                      
+                })
+
         
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
@@ -1943,7 +1963,7 @@ def load_available_tickets():
             tickets_local = (
                 Ticket.query.options(
                     joinedload(Ticket.seat).load_only(Seat.section_id, Seat.row, Seat.number),
-                    joinedload(Ticket.seat).joinedload(Seat.section).load_only(Section.name),
+                    joinedload(Ticket.seat).joinedload(Seat.section).load_only(Section.name, Section.accepted_payment_methods),
                     load_only(Ticket.ticket_id, Ticket.status, Ticket.price, Ticket.expires_at)
                 )
                 .filter(Ticket.event_id == event.event_id)
@@ -1957,9 +1977,10 @@ def load_available_tickets():
                     "status": t.status,
                     "price": t.price,
                     "number": t.seat.number,
-                    "section": t.seat.section.name if t.seat and t.seat.section else '',
+                    "section": t.seat.section.name.replace('20_', ' ') if t.seat and t.seat.section else '',
                     "row": t.seat.row if t.seat else '',
-                    "expires_at": t.expires_at.isoformat() if t.expires_at else None
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                    "allowed_payment_methods": t.seat.section.accepted_payment_methods if t.seat and t.seat.section else 'all',  # agregar el método de pago solicitado
                 }
                 for t in tickets_local
             ]
@@ -1974,6 +1995,11 @@ def load_available_tickets():
         for t in tickets:
             if t["status"] in ["disponible", "en carrito"]:
 
+                if t.get("allowed_payment_methods") and t["allowed_payment_methods"] != "all":
+                    allowed_methods = [method.strip().lower() for method in t["allowed_payment_methods"].split(",")]
+                    if payment_method.lower() not in allowed_methods:
+                        continue
+
                 # Comparación segura
                 if t["status"] == "en carrito":
                     expires_raw = t.get("expires_at")
@@ -1983,7 +2009,7 @@ def load_available_tickets():
                     if isinstance(expires_raw, (int, float)):
                         expires_ts = float(expires_raw)
                     elif isinstance(expires_raw, str):
-                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                             try:
                                 expires_dt = datetime.strptime(expires_raw, fmt)
                                 expires_ts = calendar.timegm(expires_dt.utctimetuple())
@@ -2027,6 +2053,7 @@ def load_available_tickets():
             "fee": event.Fee,
             "event_id": event.event_id,
             "BsDExchangeRate": BsDexchangeRate,
+            "additionalFeatures": additional_features_list,
             "status": "ok"
         }), 200
 
