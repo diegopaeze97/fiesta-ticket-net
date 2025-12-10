@@ -3195,7 +3195,7 @@ def approve_abono():
                 'ticket_id': ticket.ticket_id,
                 'row': ticket.seat.row,
                 'number': ticket.seat.number,
-                'section': ticket.seat.section.name,
+                'section': ticket.seat.section.name.replace('20_',' '),
                 'event': ticket.price,
                 'price': round(ticket.price / 100, 2)
             }
@@ -3498,7 +3498,7 @@ def approve_abono():
                     'exchange_rate_bsd': round(exchangeRate/100, 2),
                     'status': 'aprobado',
                     'title': 'Tu pago ha sido procesado exitosamente',
-                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
+                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu recibo',
                     'is_package_tour': payment.sale.event_rel.type_of_event == 'paquete_turistico',
                     'currency': currency,
                     'add_ons': add_ons_list

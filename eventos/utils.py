@@ -278,8 +278,7 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
 
 
     except Exception as e:
-        logging.error(f"Error sending email: {e}")
-        #db.session.rollback()   
+        logging.error(f"Error sending email: {e}") 
 
 def update_user_gallery_newQR(img, db, ticket, s3):
     S3_BUCKET = "imagenes-fiestatravel"
@@ -550,6 +549,7 @@ email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 phone_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')  # E.164 format
 cedula_pattern = re.compile(r'^[EV]{1}\d{1,8}$')
 venezuelan_phone_pattern = re.compile(r'^(?:0412|0422|0414|0424|0416|0426)\d{7}$')
+country_code_pattern = re.compile(r'^\+?\d{1,4}$')
 
 usd_payment_methods = ['credit_card', 'paypal', 'stripe', 'apple_pay', 'google_pay', 'zelle', 'efectivo', 'binance']
 bsd_payment_methods = ['pagomovil', 'debito_inmediato', 'c2p', 'pos']

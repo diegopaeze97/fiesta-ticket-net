@@ -17,6 +17,7 @@ class EventsUsers(db.Model):
     Email = Column(String)
     Identification = Column(String)
     Password = Column(String)
+    CountryCode = Column(String)
     PhoneNumber = Column(String)
     MainPicture = Column(String)
     cleared = Column(String) #status del usuario: bloqueado, eliminado, verificado o no verificado.
