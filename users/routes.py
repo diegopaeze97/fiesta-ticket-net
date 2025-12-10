@@ -16,6 +16,7 @@ import eventos.utils as utils
 from extensions import mail
 from decorators.utils import optional_roles, roles_required
 import signup.utils as signup_utils
+import users.utils as users_utils
 
 users = Blueprint('users', __name__)
 
@@ -539,3 +540,31 @@ def recovery_password_verify_code():
     except Exception as e:
         logging.error(f"Error en la validación del código de verificación: {e}")
         return jsonify({'message': 'Ocurrió un error inesperado.'}), 500
+    
+@users.route('/update_personal_info', methods=['PUT'])
+@jwt_required()
+def update_personal_info():
+    user_id = get_jwt()['id']
+    firstname = bleach.clean(request.json.get("firstname", ""), strip=True)
+    lastname = bleach.clean(request.json.get("lastname", ""), strip=True)
+    phone = request.json.get("telefono", "").strip()
+    cedula = bleach.clean(request.json.get("cedula", ""), strip=True)
+    cedula_type = bleach.clean(request.json.get("cedula_type", ""), strip=True)
+    codigo_pais = bleach.clean(request.json.get("codigo_pais", ""), strip=True) 
+    address = bleach.clean(request.json.get("direccion", ""), strip=True)
+    try:
+        identification = f"{cedula_type.upper()}{cedula}"
+        phone = f"{codigo_pais}{phone}"
+        update = users_utils.update_user_info(user_id, firstname, lastname, codigo_pais, phone, identification, address, missing_fields_behavior='validate')
+
+        if update[1] != 200:
+            return update
+
+        db.session.commit()
+        return jsonify({'status': 'ok', 'message': 'Información actualizada correctamente.'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al actualizar la información personal: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al actualizar la información.'}), 500
+    
