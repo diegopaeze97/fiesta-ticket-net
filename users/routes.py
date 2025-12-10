@@ -541,12 +541,10 @@ def recovery_password_verify_code():
         logging.error(f"Error en la validación del código de verificación: {e}")
         return jsonify({'message': 'Ocurrió un error inesperado.'}), 500
     
-@users.route('/update_personal_info', methods=['PUT'])
+@users.route('/update_personal_info', methods=['PUT']) #esta ruta se usa para llenar informacion faltante en el perfil de usuario, principalemnte cuando crea la cuenta con social login
 @jwt_required()
 def update_personal_info():
     user_id = get_jwt()['id']
-    firstname = bleach.clean(request.json.get("firstname", ""), strip=True)
-    lastname = bleach.clean(request.json.get("lastname", ""), strip=True)
     phone = request.json.get("telefono", "").strip()
     cedula = bleach.clean(request.json.get("cedula", ""), strip=True)
     cedula_type = bleach.clean(request.json.get("cedula_type", ""), strip=True)
@@ -555,7 +553,7 @@ def update_personal_info():
     try:
         identification = f"{cedula_type.upper()}{cedula}"
         phone = f"{codigo_pais}{phone}"
-        update = users_utils.update_user_info(user_id, firstname, lastname, codigo_pais, phone, identification, address, missing_fields_behavior='validate')
+        update = users_utils.update_user_info(user_id, codigo_pais, phone, identification, address)
 
         if update[1] != 200:
             return update
