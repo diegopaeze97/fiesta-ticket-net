@@ -3237,35 +3237,37 @@ def approve_abono():
                 if cancel_reservation:
                     payment.sale.status = 'cancelado'
 
-                    # 🔗 Llamar a Tickera para liberar los tickets bloqueados
-                    try:
-                        tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
-                        tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
-                        url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
+                    if event.from_api and tickets_to_release:
 
-                        logging.info("Liberando tickets en Tickera...")
+                        # 🔗 Llamar a Tickera para liberar los tickets bloqueados
+                        try:
+                            tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+                            tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+                            url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
 
-                        payload = {
-                            "event": event.event_id_provider,
-                            "tickets": tickets_to_release,
-                            "tickera_id": tickera_id,
-                            "tickera_api_key": tickera_api_key
-                        }
+                            logging.info("Liberando tickets en Tickera...")
 
-                        response_block = requests.post(url_block, json=payload, timeout=60)
+                            payload = {
+                                "event": event.event_id_provider,
+                                "tickets": tickets_to_release,
+                                "tickera_id": tickera_id,
+                                "tickera_api_key": tickera_api_key
+                            }
 
-                        if response_block.status_code != 200:
+                            response_block = requests.post(url_block, json=payload, timeout=60)
+
+                            if response_block.status_code != 200:
+                                db.session.rollback()
+                                return jsonify({
+                                    "status": "error",
+                                    "code": response_block.status_code,
+                                    "message": response_block.json().get("message", "Error desconocido en Tickera")
+                                }), response_block.status_code
+
+                        except requests.exceptions.RequestException as e:
                             db.session.rollback()
-                            return jsonify({
-                                "status": "error",
-                                "code": response_block.status_code,
-                                "message": response_block.json().get("message", "Error desconocido en Tickera")
-                            }), response_block.status_code
-
-                    except requests.exceptions.RequestException as e:
-                        db.session.rollback()
-                        logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
-                        return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
+                            logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
+                            return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
 
                 sale_data = {
                     'sale_id': payment.sale.sale_id,
