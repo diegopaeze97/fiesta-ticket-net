@@ -3389,11 +3389,14 @@ def approve_abono():
 
                 tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
                 total_price = payment.sale.price
+                total_price_addons = 0
+                total_price_tickets = 0
 
                 #chequeamos si hay addons
                 add_ons = payment.sale.purchased_features
                 add_ons_list = []
                 if add_ons:
+                    total_price_addons = 0
                     for addon in add_ons:
                         feature = addon.feature
                         if feature:
@@ -3404,6 +3407,9 @@ def approve_abono():
                                 'TotalPrice': round((addon.PurchaseAmount * addon.Quantity)/100, 2),
                                 'Quantity': addon.Quantity
                             })
+                            total_price_addons += addon.PurchaseAmount * addon.Quantity
+
+                total_price_tickets = total_price - total_price_addons
 
                 if not tickets_a_emitir:
                     return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
@@ -3423,7 +3429,7 @@ def approve_abono():
                     discount = 0
 
                     if payment.sale.discount > 0:
-                        proportion = ticket.price / total_price
+                        proportion = ticket.price / total_price_tickets
                         discount = int(round(payment.sale.discount * proportion, 2))
 
                     
@@ -3480,16 +3486,18 @@ def approve_abono():
                 else:
                     currency = 'bsd'
 
+                print(currency)
+
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
                     'event': payment.sale.event_rel.name,
                     'venue': payment.sale.event_rel.venue.name,
                     'date': payment.sale.event_rel.date_string,
                     'hour': payment.sale.event_rel.hour_string,
-                    'price': round(payment.sale.price*exchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
-                    'iva_amount': round(amount_IVA*exchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
-                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
-                    'total_abono': round(received*exchangeRate / 10000, 2) if currency == 'bsd' else round(received / 100, 2),
+                    'price':  round(payment.sale.price / 100, 2),
+                    'iva_amount': round(amount_IVA / 100, 2),
+                    'net_amount': round(amount_no_IVA / 100, 2),
+                    'total_abono': round(received / 100, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
                     'reference': PaymentReference,

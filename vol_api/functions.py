@@ -323,100 +323,147 @@ def get_debitoinmediato_code(payload):
 
 
 def validate_c2p_realtime(payment_data):
+    C2P_TARGET_URL = f"{_base_url}/c2p"
     """
-    Valida un pago C2P (PagoMóvil) en tiempo real.
-    Esta función utiliza el endpoint verify_p2c para verificar la transacción.
-    
-    Args:
-        payment_data (dict): Diccionario con los datos del pago:
-            - fecha (str): Fecha de la transacción en formato DD/MM/YYYY
-            - banco (str): Código del banco (ej: '0102')
-            - telefonoP (str): Número de teléfono del pagador
-            - referencia (str): Referencia de la transacción
-            - monto (float): Monto de la transacción
-    
-    Returns:
-        tuple: (dict, int) - Diccionario con el resultado y código de estado HTTP
+    Emisión de pago C2P (PagoMovil C2P).
+    Espera JSON con al menos:
+      - monto (string o number)
+      - nacionalidad (string, ejemplo 'V')
+      - cedula (string o number)
+      - banco (codigo numérico de banco, e.g. '0104')
+      - tlf | telefono (string con prefijo 58 + codigo area sin 0 + 7 digitos, e.g. 584125558877)
+      - token (string)  # token del pagador para autorizar el pago
+    Opcional:
+      - email (string)
+    El endpoint encripta dt y hace POST a /c2p del banco (envía { hs, dt }).
+    Desencripta la respuesta y la devuelve al cliente.
     """
     try:
-        # Validar que tengamos todos los campos requeridos
-        required_fields = ['fecha', 'banco', 'telefonoP', 'referencia', 'monto']
-        missing_fields = [field for field in required_fields if field not in payment_data or not payment_data[field]]
-        
-        if missing_fields:
-            logging.error(f"Campos faltantes en validate_c2p_realtime: {missing_fields}")
-            return {"status_code": 400, "error": "Faltan campos requeridos", "missing": missing_fields}, 400
-        
-        # Normalizar referencia (eliminar ceros a la izquierda)
-        referencia = str(payment_data.get('referencia', '')).strip()
-        referencia = utils.normalize_referencia(referencia)
-        payment_data['referencia'] = referencia
-        
-        # Validar formato de fecha
-        fecha = payment_data.get('fecha', '')
-        if not utils.validate_date_ddmmyyyy(fecha):
-            return {"status_code": 400, "error": "Formato de fecha inválido. Use DD/MM/YYYY"}, 400
-        
-        # Validar que el monto sea un número válido
+        if not BANK_HS:
+            logging.error("BANK_HS no configurado, no se puede ejecutar C2P")
+            return ({"error": "configuración de banco incompleta"}), 500
+
+        # Aceptar distintas variantes de nombrado del teléfono y token
+        monto = payment_data.get("monto") if "monto" in payment_data else payment_data.get("amount")
+        nacionalidad = payment_data.get("nacionalidad") or payment_data.get("nacionality") or payment_data.get("nac")
+        cedula = payment_data.get("cedula") or payment_data.get("ci") or payment_data.get("identificacion")
+        banco = payment_data.get("banco") or payment_data.get("codBanco") or payment_data.get("bank")
+        # tlf puede venir como 'tlf', 'telefono' o 'telefonoP' u otros
+        tlf = payment_data.get("tlf") or payment_data.get("telefono") or payment_data.get("telefonoP") or payment_data.get("phone")
+        token = payment_data.get("token") or payment_data.get("Token")
+        email = payment_data.get("email") or payment_data.get("correo")
+
+        # Validaciones básicas
+        missing = []
+        if monto is None or monto == "":
+            missing.append("monto")
+        if not nacionalidad:
+            missing.append("nacionalidad")
+        if not cedula:
+            missing.append("cedula")
+        if not banco:
+            missing.append("banco")
+        if not tlf:
+            missing.append("tlf/telefono")
+        if not token:
+            missing.append("token")
+        if missing:
+            return ({"error": "faltan campos requeridos", "missing": missing}), 400
+
+        # Normalizar monto: mantener string si viene como string, else formatear float con punto decimal
         try:
-            monto = float(payment_data.get('monto', 0))
-            if monto <= 0:
-                return {"status_code": 400, "error": "El monto debe ser mayor a cero"}, 400
-            payment_data['monto'] = monto
-        except (ValueError, TypeError):
-            return {"status_code": 400, "error": "Monto inválido"}, 400
-        
-        logging.info(f"Validando pago C2P en tiempo real - Referencia: {referencia}, Monto: {monto}")
-        
-        # Llamar a la función verify_p2c existente
-        response, status_code = verify_p2c(payment_data)
-        
-        # Procesar la respuesta
-        if status_code == 200:
-            # Verificar si la transacción fue exitosa
-            decrypted_data = response.get('decrypted', {})
-            
-            # El banco puede devolver diferentes estructuras, adaptarse según sea necesario
-            # Aquí asumimos que una respuesta exitosa tiene ciertos campos
-            if isinstance(decrypted_data, dict):
-                # Verificar si hay información de error en la respuesta
-                if 'error' in decrypted_data or 'errorCode' in decrypted_data:
-                    return {
-                        "status_code": 200,
-                        "validated": False,
-                        "message": "Transacción no válida o no encontrada",
-                        "details": decrypted_data
-                    }, 200
-                
-                # Si llegamos aquí, la validación fue exitosa
-                return {
-                    "status_code": 200,
-                    "validated": True,
-                    "message": "Transacción validada exitosamente",
-                    "transaction_data": decrypted_data
-                }, 200
+            if isinstance(monto, str):
+                monto_str = monto
             else:
-                # Respuesta inesperada
-                return {
-                    "status_code": 200,
-                    "validated": False,
-                    "message": "Formato de respuesta inesperado",
-                    "details": response
-                }, 200
+                # usar float para forzar formato con punto
+                monto_str = str(float(monto))
+        except Exception:
+            return ({"error": "monto inválido"}), 400
+        
+        # Normalizar telefono: si empieza por 0, sustituimos por 58
+        tlf_str = str(tlf).strip()
+        if tlf_str.startswith("0"):
+            tlf_str = "58" + tlf_str[1:]
+
+        # Construir dt según especificación
+        dt_obj = {
+            "monto": monto_str,
+            "nacionalidad": str(nacionalidad),
+            "cedula": str(cedula),
+            "banco": str(banco),
+            "tlf": str(tlf_str),
+            "token": str(token)
+        }
+        if email:
+            dt_obj["email"] = str(email)
+
+        logging.info("C2P: construyendo dt para cedula=%s banco=%s monto=%s", cedula, banco, monto_str)
+        dt_string = json.dumps(dt_obj, separators=(",", ":"), ensure_ascii=False)
+
+        # Encriptar DT
+        dt_encrypted_b64 = utils.encrypt_aes_cbc(dt_string)
+
+        body = {"hs": BANK_HS, "dt": dt_encrypted_b64}
+        headers = {"Content-Type": "application/json"}
+
+        logging.info("C2P: enviando petición a %s", C2P_TARGET_URL)
+        resp = requests.post(C2P_TARGET_URL, json=body, headers=headers, timeout=REQUEST_TIMEOUT, verify=False)
+
+        status_code = resp.status_code
+        text = resp.text
+        logging.info("C2P: respuesta status=%s body_len=%d", status_code, len(text))
+
+        # Intentar parsear JSON
+        try:
+            resp_json = resp.json()
+        except ValueError:
+            resp_json = None
+
+        decrypted = None
+        if resp_json:
+            # campo encriptado puede ser 'response', 'dt' o 'data'
+            enc_field = None
+            if "response" in resp_json:
+                enc_field = resp_json.get("response")
+            elif "dt" in resp_json:
+                enc_field = resp_json.get("dt")
+            elif "data" in resp_json and isinstance(resp_json.get("data"), str):
+                enc_field = resp_json.get("data")
+
+            if enc_field:
+                try:
+                    decrypted_str = utils.decrypt_aes_cbc_from_b64(enc_field)
+                    try:
+                        decrypted = json.loads(decrypted_str)
+                    except ValueError:
+                        decrypted = {"raw_decrypted": decrypted_str}
+                except Exception as e:
+                    logging.exception("C2P: fallo desencriptado: %s", e)
+                    return ({"status_code": status_code, "raw_response": resp_json, "error": "fallo desencriptado"}), 502
+            else:
+                # respuesta ya en claro
+                return ({"status_code": status_code, "response": resp_json}), status_code
         else:
-            # Error en la comunicación con el banco
-            return {
-                "status_code": status_code,
-                "validated": False,
-                "message": "Error al validar la transacción",
-                "error": response.get('error', 'Error desconocido')
-            }, status_code
-    
+            # respuesta no JSON: intentar desencriptar texto crudo (posible b64)
+            try:
+                decrypted_str = utils.decrypt_aes_cbc_from_b64(text.strip())
+                try:
+                    decrypted = json.loads(decrypted_str)
+                except ValueError:
+                    decrypted = {"raw_decrypted": decrypted_str}
+            except Exception:
+                return ({"status_code": status_code, "raw_text": text}), status_code
+
+        # Normalizar/retornar la respuesta desencriptada tal cual el banco la envíe
+        return ({"status_code": status_code, "decrypted": decrypted}), status_code
+
+    except requests.Timeout:
+        logging.exception("C2P: timeout al conectar con banco")
+        return ({"error": "timeout al conectar con el banco"}), 504
+    except requests.exceptions.RequestException as e:
+        logging.exception("C2P: error de conexión con el banco")
+        return ({"error": "Error de conexión/red con el banco", "detail": str(e)}), 503
     except Exception as e:
-        logging.exception(f"Error en validate_c2p_realtime: {e}")
-        return {
-            "status_code": 500,
-            "validated": False,
-            "error": "Error interno al validar transacción",
-            "detail": str(e)
-        }, 500
+        logging.exception("C2P: error interno: %s", e)
+        return ({"error": "error interno", "detail": str(e)}), 500
+    

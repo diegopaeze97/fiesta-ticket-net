@@ -151,18 +151,18 @@
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">Subtotal:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['net_amount']}} BsD
+                                                    {{ (sale_data['net_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD
                                                 </td>
                                             </tr>
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['iva_amount']}} BsD</td>
+                                                    {{ (sale_data['iva_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">Total:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['total_abono']}} BsD</td>
+                                                    {{ (sale_data['total_abono']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                         </table>
 

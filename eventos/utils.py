@@ -702,3 +702,21 @@ def validate_addons(addons, event, payment_method, tickets_en_carrito):
         return jsonify({"message": "Uno o más complementos inválidos"}), 400
     
     return validated_addons
+
+# Sanitizar tickets_en_carrito
+def clean_tickets(list_in):
+    out = []
+    if not list_in:
+        return out
+    for i, t in enumerate(list_in):
+        tid = t.ticket_id_provider
+        price = t.price
+        try:
+            tid_i = int(tid)
+        except Exception:
+            continue
+        # Price -> Decimal, >= 0
+        out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": 0})
+        if len(out) >= 200:
+            break
+    return out
