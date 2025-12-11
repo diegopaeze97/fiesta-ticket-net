@@ -1,8 +1,8 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app
+from flask import request, jsonify, Blueprint, make_response, session, current_app, render_template
 from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess, AdditionalFeatures, PurchasedFeatures
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -3639,7 +3639,6 @@ def refund():
                 'row': ticket.seat.row,
                 'number': ticket.seat.number,
                 'section': ticket.seat.section.name.replace('20_', ' '),
-                'event': ticket.price,
                 'price': round(ticket.price / 100, 2)
             }
             Tickets.append(t)
