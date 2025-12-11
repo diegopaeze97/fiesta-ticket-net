@@ -193,7 +193,7 @@ def handle_checkout_completed(data, config):
         # ----------------------------------------------------------------
         # 6️⃣ Aplicar cambios locales (una sola transacción)
         # ----------------------------------------------------------------
-        total_price = sum(t.price for t in tickets_en_carrito)
+        total_price_tickets = sum(t.price for t in tickets_en_carrito)
         total_fee = sum(round((event.Fee or 0) * t.price / 100, 2) for t in tickets_en_carrito)
         ticket_str_ids = '|'.join(str(t.ticket_id) for t in tickets_en_carrito)
 
@@ -205,7 +205,7 @@ def handle_checkout_completed(data, config):
         # Crear registro de venta
         sale = Sales(
             ticket_ids=ticket_str_ids,
-            price=total_price,
+            price=total_price_tickets,
             paid=received,
             user_id=user_id,
             status='pagado',
@@ -222,6 +222,7 @@ def handle_checkout_completed(data, config):
         db.session.flush()
 
         if add_ons:
+            total_price_addons = 0
             sanitized_add_ons = add_ons.replace("'", '"')  # Reemplaza comillas simples por dobles
             addons = json.loads(sanitized_add_ons)
             for addon in addons:
@@ -232,8 +233,9 @@ def handle_checkout_completed(data, config):
                     int(addon["FeaturePrice"])
                 )
                 db.session.add(purchased_feature)
-                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
-            sale.price = total_price
+
+                total_price_addons += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price_addons + total_price_tickets
             db.session.flush()
 
         # Actualizar tickets
@@ -303,7 +305,7 @@ def handle_checkout_completed(data, config):
                 return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
 
             # Validar que total_price no sea cero para evitar división por cero
-            if not total_price or total_price == 0:
+            if not total_price_tickets or total_price_tickets == 0:
                 sendnotification_checkout_failed(config, db, mail, customer, tickets_en_carrito, event, session)
                 db.session.rollback()
                 return jsonify({'message': 'Error: el precio total de la venta no puede ser cero', 'status': 'error'}), 400
@@ -312,7 +314,7 @@ def handle_checkout_completed(data, config):
                 discount = 0
 
                 if total_discount > 0:
-                    proportion = ticket.price / total_price
+                    proportion = ticket.price / total_price_tickets
                     discount = int(round(total_discount * proportion, 2))
 
 

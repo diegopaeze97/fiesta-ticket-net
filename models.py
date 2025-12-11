@@ -333,6 +333,7 @@ class Payments(db.Model):
     PaymentMethod = Column(String, nullable=False)  # 'credit_card', 'bank_transfer', etc.
     wallet = Column(String)  # 'paypal', 'stripe', lauraencinoza, etc.
     Reference = Column(String)  # referencia de pago
+    referenciaOriginal = Column(String)  # referencia original del pago, aplica para C2P
     MontoBS = Column(Integer)  # monto en bolivares
     Bank = Column(String)  # banco desde donde se hizo el pago
     PhoneNumber = Column(String)  # numero de telefono del comprador
