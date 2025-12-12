@@ -85,6 +85,9 @@ def createApp():
     app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
     app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
 
+    #aws s3
+    app.config['S3_BUCKET'] = os.getenv('S3_BUCKET')
+
     db.init_app(app)
     jwt.init_app(app)
     socketio.init_app(app)

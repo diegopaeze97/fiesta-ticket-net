@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reembolso procesado - Fiesta Ticket</title>
+</head>
+
+<body style="margin:0; padding:0; background-color:#f0f0f0; font-family: 'Arial', sans-serif;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#f0f0f0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" cellpadding="0" cellspacing="0" border="0"
+                    style="max-width:600px; margin:0 auto; border-collapse:collapse; background-color:#ffffff; border-radius:12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);">
+
+                    <tr>
+                        <td style="padding:1px; border-radius:12px;
+                            background: linear-gradient(to right, #ff6b8e 0%, #a26bff 100%);">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff"
+                                style="border-collapse:collapse; border-radius:12px;">
+
+                                <tr>
+                                    <td align="center" style="padding:30px 0 20px 0;">
+                                        <h1 style="color: #6a0dad; margin: 0; font-size: 28px; letter-spacing: 2px;">
+                                            FIESTA TICKET</h1>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td align="center" style="padding:10px 30px;">
+                                        <h2 style="color:#333; margin-bottom:10px; font-size: 24px;">
+                                            Reembolso Procesado</h2>
+                                        <p style="color:#a26bff; margin-top:0; font-size: 16px; font-weight: bold;">
+                                            Tu reembolso ha sido procesado exitosamente</p>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #ff6b8e; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 30px;">
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Detalles del Reembolso:</h3>
+                                        <p style="margin:5px 0;">Evento: <strong>{{sale_data['event']}}</strong></p>
+                                        <p style="margin:5px 0;">Lugar: {{sale_data['venue']}}</p>
+                                        <p style="margin:5px 0 15px 0;">Fecha: <strong>{{sale_data['date']}} -
+                                                {{sale_data['hour']}}</strong></p>
+                                        <p style="margin:5px 0;">Localizador: <strong>{{sale_data['localizador']}}</strong></p>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #ff6b8e; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 30px;">
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Boletos Cancelados:</h3>
+                                        <div style="font-size:14px; color:#555;">
+                                            {% for row in Tickets %}
+                                            <p>
+                                                <span style="font-weight:bold;">
+                                                    Sección: {{ row['section'] }} - {{ row['row'] }}{{ row['number'] }}
+                                                    (${{ (row['price']) | round(2) }})
+                                                </span>
+                                            </p>
+                                            {% endfor %}
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 30px 20px 30px;">
+                                        <h3 style="color:#333; font-size: 18px;">Información Importante:</h3>
+                                        <div style="background-color:#fff3cd; border-left:4px solid #ffc107; padding:15px; margin:10px 0; border-radius:4px;">
+                                            <p style="color:#856404; margin:0; font-size:14px; line-height:1.6;">
+                                                <strong>⚠️ ATENCIÓN:</strong> Cualquier boleto o reserva que poseas para este evento 
+                                                <strong>YA NO TIENE VALIDEZ</strong>. Si tienes alguna pregunta, por favor contacta 
+                                                a nuestro equipo de soporte.
+                                            </p>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 30px 20px 30px;">
+                                        <h3 style="color:#333; font-size: 18px;">Detalles Financieros:</h3>
+                                        <table width="100%" cellpadding="5" cellspacing="0" border="0" style="font-size:14px;">
+                                            <tr>
+                                                <td style="color:#555;">Subtotal:</td>
+                                                <td align="right" style="font-weight:bold;">${{sale_data['price']}}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="color:#555;">Fee de servicio:</td>
+                                                <td align="right" style="font-weight:bold;">${{sale_data['fee']}}</td>
+                                            </tr>
+                                            {% if sale_data['discount'] > 0 %}
+                                            <tr>
+                                                <td style="color:#555;">Descuento:</td>
+                                                <td align="right" style="font-weight:bold; color:#28a745;">-${{sale_data['discount']}}</td>
+                                            </tr>
+                                            {% endif %}
+                                            <tr style="border-top:2px solid #ddd;">
+                                                <td style="color:#333; font-size:16px; padding-top:10px;"><strong>Total Reembolsado:</strong></td>
+                                                <td align="right" style="font-weight:bold; font-size:18px; color:#6a0dad; padding-top:10px;">
+                                                    ${{sale_data['price'] + sale_data['fee'] - sale_data['discount']}}
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td align="center" style="padding:20px 30px 30px 30px;">
+                                        <p style="color:#777; font-size:12px; margin:0; line-height:1.6;">
+                                            Si tienes alguna pregunta o necesitas asistencia, no dudes en contactarnos.
+                                        </p>
+                                        <p style="color:#777; font-size:12px; margin:10px 0 0 0;">
+                                            <strong>Equipo de Fiesta Ticket</strong>
+                                        </p>
+                                    </td>
+                                </tr>
+
+                            </table>
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
