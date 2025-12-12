@@ -16,8 +16,12 @@ import eventos.utils as utils
 from extensions import mail
 from decorators.utils import optional_roles, roles_required
 import signup.utils as signup_utils
+import uuid
 
 users = Blueprint('users', __name__)
+
+# Constants
+S3_BUCKET = "imagenes-fiestatravel"
 
 @users.route('/register', methods=['POST'])
 def register():
@@ -614,9 +618,9 @@ def update_personal_info():
         fullname = bleach.clean(request.json.get('fullname', ''), strip=True)
         cedula = bleach.clean(request.json.get('cedula', ''), strip=True)
         cedula_type = bleach.clean(request.json.get('cedula_type', ''), strip=True)
-        telefono = request.json.get('telefono', '').strip()
+        telefono = bleach.clean(request.json.get('telefono', ''), strip=True)
         direccion = bleach.clean(request.json.get('direccion', ''), strip=True)
-        codigo_pais = request.json.get('codigo_pais', '').strip()
+        codigo_pais = bleach.clean(request.json.get('codigo_pais', ''), strip=True)
         
         # Validaciones
         if not fullname:
@@ -770,33 +774,30 @@ def upload_profile_photo():
             try:
                 # Extraer la key del URL de S3
                 # URL formato: https://bucket.s3.amazonaws.com/path/to/file
-                bucket_name = "imagenes-fiestatravel"
-                if bucket_name in user.MainPicture:
+                if S3_BUCKET in user.MainPicture:
                     # Extraer la parte después del bucket
-                    parts = user.MainPicture.split(f"{bucket_name}.s3.amazonaws.com/")
+                    parts = user.MainPicture.split(f"{S3_BUCKET}.s3.amazonaws.com/")
                     if len(parts) > 1:
                         old_key = parts[1]
-                        s3.delete_object(Bucket=bucket_name, Key=old_key)
+                        s3.delete_object(Bucket=S3_BUCKET, Key=old_key)
             except Exception as e:
                 logging.warning(f"Error eliminando foto anterior: {e}")
         
         # Generar nombre único para el archivo
-        import uuid
         file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else 'jpg'
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"profile_photos/{user_id}/{timestamp}_{uuid.uuid4().hex[:8]}.{file_extension}"
         
         # Subir a S3
-        bucket_name = "imagenes-fiestatravel"
         s3.upload_fileobj(
             file,
-            bucket_name,
+            S3_BUCKET,
             filename,
             ExtraArgs={'ContentType': file.content_type}
         )
         
         # Construir URL
-        photo_url = f"https://{bucket_name}.s3.amazonaws.com/{filename}"
+        photo_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{filename}"
         
         # Actualizar MainPicture en la base de datos
         user.MainPicture = photo_url
