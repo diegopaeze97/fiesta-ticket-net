@@ -2091,7 +2091,10 @@ def load_boleteria():
             )
             .filter(
                 Ticket.event_id == event.event_id,
-                Ticket.status == 'pagado'
+                or_
+                (Ticket.status == 'pagado',
+                Ticket.status == 'reservado',
+                Ticket.blockedBy != None)
             )
             .all()
         )
@@ -2425,6 +2428,152 @@ def load_map():
         total_end = time.perf_counter()
         logging.error(f"❌ Error en request tras {total_end - start_time:.4f} segundos")
         return jsonify({"message": f"Error en el request: {str(e)}"}), 500
+
+@backend.route('/new-massive-block-of-tickets', methods=['PUT']) #permite subir un csv o excel con los boletos que han sido bloqueados para tickeras o ventas de terceros
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def new_massive_block_of_tickets():
+    try:
+        user_id = get_jwt().get("id")
+
+        # 1. Extraer datos del formulario
+        event_id = request.args.get('query', '')
+        seat_file = request.files.get('seatFile')
+
+        now = datetime.now(timezone.utc).replace(tzinfo=timezone.utc)  # Siempre en UTC
+
+        if not all([event_id, seat_file]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        if not allowed_file(seat_file.filename):
+            return jsonify({'message': 'Formato de archivo no permitido', 'status': 'error'}), 400
+        
+        event = Event.query.filter_by(event_id=event_id).first()
+
+        venue_id = event.venue_id
+
+        # 2. Leer el archivo con pandas (soporta csv y excel)
+        if seat_file.filename.endswith('.csv'):
+            df = pd.read_csv(seat_file)
+        else:
+            df = pd.read_excel(seat_file)
+
+        # Normalizamos nombres de columnas
+        df.columns = df.columns.str.strip().str.lower()
+
+        # Validar que tenga las columnas correctas
+        required_cols = {'asiento', 'seccion', 'by', 'fee', 'discount'}
+        if not required_cols.issubset(df.columns):
+            return jsonify({'message': 'El archivo no tiene las columnas requeridas', 'status': 'error'}), 400
+
+        # 5. Procesar cada fila del archivo
+        for _, row in df.iterrows():
+            asiento = str(row['asiento']).strip()
+            seccion = str(row['seccion']).strip()
+            discount = str(row['discount']).strip()
+            fee = str(row['fee']).strip()
+            by = str(row['by']).strip()
+
+            # Dividir el asiento en fila y número
+            row_label = ''.join([ch for ch in asiento if ch.isalpha()])
+            number = ''.join([ch for ch in asiento if ch.isdigit()])
+
+            section = Section.query.filter(
+                and_(Section.name == seccion, Section.venue_id == venue_id)
+            ).first()
+
+            if not section:
+                return jsonify({'message': f'No se encontró la sección {seccion} en el venue', 'status': 'error'}), 400
+
+            seat = Seat.query.filter_by(section_id=section.section_id, row=row_label, number=number).first()
+
+            if not seat:
+                return jsonify({'message': f"No se encontró el asiento {asiento} de la fila {row_label} de la seccion {seccion}", 'status': 'error'}), 400
+
+            # Modificar Ticket
+            ticket = Ticket.query.filter(
+                and_(Ticket.seat_id == seat.seat_id, Ticket.event_id == event_id)
+            ).first()
+
+            if not ticket:
+                return jsonify({'message': f'No se encontró el ticket para el asiento {asiento} de la fila {row_label} de la seccion {seccion}', 'status': 'error'}), 400
+
+            if ticket.status not in ['disponible', 'en carrito']:
+                return jsonify({'message': f"El asiento {asiento} de la fila {row_label} de la seccion {seccion} no esta disponible, modifique su status antes de bloquearlo", 'status': 'error'}), 400
+            
+            if ticket.status == 'en carrito':
+                if ticket.expires_at and ticket.expires_at.tzinfo is None:
+                    expires_at_aware = ticket.expires_at.replace(tzinfo=timezone.utc)
+                else:
+                    expires_at_aware = ticket.expires_at # Ya tiene info de zona horaria
+                if expires_at_aware > now:
+                    return jsonify({'message': f"El asiento {asiento} de la fila {row_label} de la seccion {seccion} está en carrito por otro usuario, no se puede bloquear", 'status': 'error'}), 400
+
+            ticket.status = 'bloqueado'
+            ticket.blockedBy = by
+            ticket.fee = int(fee*100)
+            ticket.discount = int(discount*100)
+
+        log_for_massive_block = Logs(
+            UserID=user_id,
+            Type='bloqueo masivo de boletos',
+            Timestamp=datetime.now(),
+            Details=f"Se han bloqueado tickets de forma masiva para el evento{event.name}",
+        ) 
+        db.session.add(log_for_massive_block)
+
+        db.session.commit()
+
+        return jsonify({'message': 'bloqueo masivo exitoso', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al bloquear boletos: {e}")
+        return jsonify({'message': 'Error al bloquear boletos', 'status': 'error'}), 500
+    
+@backend.route('/unblock-ticket', methods=['GET']) #para desbloquear un boleto vendido por un tercero
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def unblock_ticket():
+    try:
+        user_id = get_jwt().get("id")
+
+        # 1. Extraer datos del formulario
+        ticket_id = request.args.get('query', '')
+
+        if not all([ticket_id]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        # Modificar Ticket
+        ticket = Ticket.query.filter(
+            and_(Ticket.ticket_id == int(ticket_id))
+        ).one_or_none()
+
+        if not ticket:
+            return jsonify({'message': f'No se encontró el ticket', 'status': 'error'}), 400
+
+        if ticket.status != 'bloqueado' or not ticket.blockedBy:
+            return jsonify({'message': f"El asiento no se encuentra bloqueado actualmente", 'status': 'error'}), 400
+
+        ticket.status = 'disponible'
+        ticket.blockedBy = None
+        ticket.discount = 0
+        ticket.fee = 0
+
+        log_for_block = Logs(
+            UserID=user_id,
+            Type='boleto desbloqueado',
+            Timestamp=datetime.now(),
+            Details=f"Se ha desbloqueado el ticket de ID {ticket_id} (Asiento {ticket.seat.row}{ticket.seat.number}) del evento {ticket.event.name}",
+        ) 
+        db.session.add(log_for_block)
+
+        db.session.commit()
+
+        return jsonify({'message': 'ticket desbloqueado exitosamente', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al desbloquear ticket: {e}")
+        return jsonify({'message': 'Error al desbloquear ticket', 'status': 'error'}), 500
     
 @backend.route('/block-tickets', methods=['POST'])
 @roles_required(allowed_roles=["admin", "tiquetero"])
