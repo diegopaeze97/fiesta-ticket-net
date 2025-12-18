@@ -45,7 +45,7 @@ def load_dashboard():
 
         events_data = []
         total_liquidado = 0
-        gross_sales = 0
+        net_sales = 0  # Renombrado de gross_sales a net_sales para reflejar que se restan fees
         total_tickets_sold = 0
         tickets = []
 
@@ -60,7 +60,9 @@ def load_dashboard():
             })
 
             total_liquidado += (event.liquidado or 0)
-            gross_sales += ((getattr(event, 'gross_sales', 0) or 0) - (getattr(event, 'total_fees', 0) or 0))
+            # Calcular ventas netas (gross_sales - total_fees) para el proveedor
+            # NOTA: gross_sales ya contiene el total de ventas, restamos fees para obtener lo que corresponde al proveedor
+            net_sales += ((getattr(event, 'gross_sales', 0) or 0) - (getattr(event, 'total_fees', 0) or 0))
 
             # Contar tickets pagados. Si tienes muchos tickets considera hacer un COUNT en BD
             if event.tickets:
@@ -77,7 +79,7 @@ def load_dashboard():
         stats = {
             'total_events': len(events),
             'total_liquidated': total_liquidado/100,
-            'gross_sales': gross_sales/100,
+            'gross_sales': net_sales/100,  # Se mantiene el nombre 'gross_sales' en la respuesta por compatibilidad con frontend
             'total_tickets_sold': total_tickets_sold,
         }
 
@@ -308,7 +310,7 @@ def load_liquidations():
             "event_hour": event_obj.hour_string,
             "event_place": event_obj.venue.name if getattr(event_obj, 'venue', None) else '',
             "total_liquidated": total_liquidated_amount,
-            "gross_sales": total_sales_amount,
+            "gross_sales": total_sales_amount,  # Total de ventas (price - discount), calculado desde Sales
             "total_tickets_sold": total_tickets_sold,
             "total_tickets_liquidated": total_tickets_liquidated
         }

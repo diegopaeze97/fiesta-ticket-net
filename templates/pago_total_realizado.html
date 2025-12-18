@@ -63,6 +63,37 @@
                                     </td>
                                 </tr>
 
+                                {% if sale_data['add_ons'] %}
+                                <tr>
+                                    <td style="padding: 0 30px;">
+                                        <hr style="border:none; border-top:2px solid #ff6b8e; margin:15px 0;" />
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:0 30px;">
+                                        <h3 style="color:#333; font-size: 18px; margin-top:0;">Complementos Adicionales:
+                                        </h3>
+                                        <div style="font-size:14px; color:#555; margin-bottom: 15px;">
+                                            {% for addon in sale_data['add_ons'] %}
+                                            <p style="margin: 5px 0;">
+                                                <span style="font-weight:bold;">
+                                                    {{ addon['FeatureName'] }}
+                                                </span>
+                                                (Cantidad: {{ addon['Quantity'] }} x
+                                                {{ (addon['FeaturePrice']*sale_data['exchange_rate_bsd']) | round(2) }}
+                                                BsD c/u)
+                                                - Total:
+                                                <strong>
+                                                    {{ (addon['TotalPrice']*sale_data['exchange_rate_bsd']) | round(2) }}
+                                                    BsD
+                                                </strong>
+                                            </p>
+                                            {% endfor %}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endif %}
+
                                 <tr>
                                     <td style="padding: 0 30px;">
                                         <hr style="border:none; border-top:2px solid #a26bff; margin:15px 0;" />
@@ -120,18 +151,18 @@
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">Subtotal:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['net_amount']}} BsD
+                                                    {{ (sale_data['net_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD
                                                 </td>
                                             </tr>
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['iva_amount']}} BsD</td>
+                                                    {{ (sale_data['iva_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">Total:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{sale_data['total_abono']}} BsD</td>
+                                                    {{ (sale_data['total_abono']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                         </table>
 

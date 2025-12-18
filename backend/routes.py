@@ -1,8 +1,8 @@
-from flask import request, jsonify, Blueprint, make_response, session, current_app
+from flask import request, jsonify, Blueprint, make_response, session, current_app, render_template
 from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess, AdditionalFeatures, PurchasedFeatures
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -443,7 +443,11 @@ def logout():
 @roles_required(allowed_roles=["admin", "tiquetero"])
 def load_dashboard():
     try:
-        # Single query for total users and total admins
+        # Single query for total users and counts by role
+        # NOTA: nullif(role != 'admin', True) cuenta admins porque:
+        # - Si role != 'admin' es True (no es admin), devuelve NULL
+        # - Si role != 'admin' es False (es admin), devuelve False
+        # - COUNT solo cuenta valores no-NULL, por lo que cuenta cuando role == 'admin'
         total_users, total_admins, total_tiqueteros, total_customers, total_passive_customers = db.session.query(
             func.count(EventsUsers.CustomerID),
             func.count(func.nullif(EventsUsers.role != 'admin', True)),
@@ -460,7 +464,8 @@ def load_dashboard():
                 'fullname': sale.customer.FirstName if sale.customer else '',
                 'status': sale.StatusFinanciamiento,
                 'event': sale.event.name if sale.event else '',
-                'price': round((sale.price + sale.discount - sale.discount )/100, 2),
+                # BUG FIX: Corregido cálculo - precio final que paga el cliente (price - discount + fee)
+                'price': round((sale.price - sale.discount + sale.fee)/100, 2),
                 'saleLocator': sale.saleLocator,
                 'user_email': sale.customer.Email if sale.customer else ''
             })
@@ -655,6 +660,7 @@ def new_event():
                 return jsonify({"message": "Faltan parámetros: externalEvent"}, 400)
 
             event.event_id_provider = int(event_id) if event_id else None
+            event.from_api = True
 
             # Llamada a servicio externo con retry
             url = f"{current_app.config.get('FIESTATRAVEL_API_URL')}/eventos_api/load-tickets"
@@ -672,7 +678,7 @@ def new_event():
                 "X-Tickera-Api-Key": tickera_api_key
             }
             params = {"query": query}
-            verify = current_app.config.get("REQUESTS_VERIFY", True)
+            verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
 
             try:
                 resp = session.get(url, params=params, headers=headers, timeout=(5, 60), verify=verify)
@@ -758,7 +764,15 @@ def update_event():
     """
     try:
         event_id = request.args.get('eventId')
-        event = Event.query.filter_by(event_id=int(event_id)).first()
+        # Validar que event_id sea un entero válido
+        if not event_id:
+            return jsonify({'message': 'Falta el parámetro eventId', 'status': 'error'}), 400
+        try:
+            event_id = int(event_id)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'ID de evento inválido', 'status': 'error'}), 400
+        
+        event = Event.query.filter_by(event_id=event_id).first()
         if not event:
             return jsonify({'message': 'Evento no encontrado', 'status': 'error'}), 404
 
@@ -1258,7 +1272,12 @@ def create_liquidation():
 
         if not event:
             return jsonify({'message': 'faltan parámetros', 'status': 'error'}), 400
-
+        
+        # Validar que event sea un entero válido
+        try:
+            event = int(event)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'ID de evento inválido', 'status': 'error'}), 400
 
         # Información de ventas
         query = Sales.query.options(
@@ -1276,7 +1295,7 @@ def create_liquidation():
         filters = []
 
         filters.append(Sales.status=='pagado')
-        filters.append(Sales.event==int(event))
+        filters.append(Sales.event==event)
         filters.append(Sales.liquidado==False)
 
         if filters:
@@ -1808,8 +1827,9 @@ def load_available_tickets():
         date, time = ('', '')
         tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
         tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+        payment_method = request.args.get('payment_method', '')
 
-        if not all([event_name, venue, date_and_time, tickera_id, tickera_api_key]):
+        if not all([event_name, venue, date_and_time, payment_method, tickera_id, tickera_api_key]):
             return jsonify({"message": "Faltan parámetros"}), 400
         
         if ' - ' in date_and_time:
@@ -1824,7 +1844,7 @@ def load_available_tickets():
                 Event.event_id,
                 Event.name,
                 Event.financiamientos,
-                Event.Type
+                Event.Type,
             ))
             .filter(
                 and_(
@@ -1842,6 +1862,25 @@ def load_available_tickets():
         
         if event.active != True:
             return jsonify({"message": "El evento no está activo"}), 400
+        
+        #obtenemos las características adicionales del evento
+        additional_features_list = []
+        if event.additional_features:
+            for feature in event.additional_features:
+
+                if feature.Active != True:
+                    continue
+                accepted_payments = feature.accepted_payment_methods.split(',') if feature.accepted_payment_methods else ['all']
+                if accepted_payments != ['all'] and payment_method.lower() not in [method.strip().lower() for method in accepted_payments]:
+                    continue
+                additional_features_list.append({
+                    "FeatureID": feature.FeatureID,
+                    "FeatureName": feature.FeatureName,
+                    "FeatureDescription": feature.FeatureDescription,   
+                    "FeaturePrice": feature.FeaturePrice,
+                    "FeatureCategory": feature.FeatureCategory,                      
+                })
+
         
         # ---------------------------------------------------------------
         # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
@@ -1862,69 +1901,104 @@ def load_available_tickets():
         except Exception:
             db.session.rollback()
             return jsonify({'message': 'Tasa de cambio en formato inválido', 'status': 'error'}), 500
+        
+        if event.from_api:
 
-        # ---------------------------------------------------------------
-        # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
-        # ---------------------------------------------------------------
+            # ---------------------------------------------------------------
+            # 3️⃣ Hacer request externo (con retries, timeouts y envío seguro de credenciales)
+            # ---------------------------------------------------------------
 
-        url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-map"
-        query = str(event.event_id_provider).strip()  # normalizar / sanitizar
+            url = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/load-map"
+            query = str(event.event_id_provider).strip()  # normalizar / sanitizar
 
-        # Construir sesión con reintentos para errores transitorios
-        session = requests.Session()
-        retries = Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=frozenset(['GET', 'POST'])
-        )
-        adapter = HTTPAdapter(max_retries=retries)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
+            # Construir sesión con reintentos para errores transitorios
+            session = requests.Session()
+            retries = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=frozenset(['GET', 'POST'])
+            )
+            adapter = HTTPAdapter(max_retries=retries)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
 
-        # Enviar credenciales en headers (evita que queden en logs/urls)
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "FiestaTickets/1.0",
-            "X-Tickera-Id": tickera_id,
-            "X-Tickera-Api-Key": tickera_api_key
-        }
+            # Enviar credenciales en headers (evita que queden en logs/urls)
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "FiestaTickets/1.0",
+                "X-Tickera-Id": tickera_id,
+                "X-Tickera-Api-Key": tickera_api_key
+            }
 
-        params = {"query": query}
+            params = {"query": query}
 
-        # Verificación de certificado configurable (True por defecto)
-        verify = current_app.config.get("REQUESTS_VERIFY", True)
+            # Verificación de certificado configurable (True por defecto)
+            verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
 
-        try:
-            # timeouts: (connect, read)
-            response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
-
-            # Validaciones básicas de seguridad / integridad
-            content_type = response.headers.get("Content-Type", "")
-            if "application/json" not in content_type:
-                logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
-                response.raise_for_status()
-
-        except requests.exceptions.RequestException:
-            logging.exception("Error al comunicarse con Tickera")
-            # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
-            raise
-        finally:
             try:
-                session.close()
-            except Exception:
-                pass
+                # timeouts: (connect, read)
+                response = session.get(url, params=params, headers=headers, timeout=(5, 60), allow_redirects=False, verify=verify)
+
+                # Validaciones básicas de seguridad / integridad
+                content_type = response.headers.get("Content-Type", "")
+                if "application/json" not in content_type:
+                    logging.error("Respuesta inesperada de Tickera: Content-Type no es JSON")
+                    response.raise_for_status()
+
+            except requests.exceptions.RequestException:
+                logging.exception("Error al comunicarse con Tickera")
+                # Re-lanzar para que el handler exterior lo capture y responda apropiadamente
+                raise
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+
+            now = datetime.now(timezone.utc)  # Siempre en UTC
+
+            tickets = response.json().get("tickets", [])
+        else: #si no viene de la api
+            tickets_local = (
+                Ticket.query.options(
+                    joinedload(Ticket.seat).load_only(Seat.section_id, Seat.row, Seat.number),
+                    joinedload(Ticket.seat).joinedload(Seat.section).load_only(Section.name, Section.accepted_payment_methods),
+                    load_only(Ticket.ticket_id, Ticket.status, Ticket.price, Ticket.expires_at)
+                )
+                .filter(Ticket.event_id == event.event_id)
+                .all()
+            )
+
+            # Convertir a lista de diccionarios para un procesamiento uniforme
+            tickets = [
+                {
+                    "ticket_id": t.ticket_id,
+                    "status": t.status,
+                    "price": t.price,
+                    "number": t.seat.number,
+                    "section": t.seat.section.name.replace('20_', ' ') if t.seat and t.seat.section else '',
+                    "row": t.seat.row if t.seat else '',
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                    "allowed_payment_methods": t.seat.section.accepted_payment_methods if t.seat and t.seat.section else 'all',  # agregar el método de pago solicitado
+                }
+                for t in tickets_local
+            ]
+
+            now = datetime.now(timezone.utc)  # Siempre en UTC
 
 
+        now_ts = calendar.timegm(now.utctimetuple())
         # ✅ Procesar los tickets agrupados por sección y fila
         sections_dict = {}
-        now = datetime.now(timezone.utc)  # Siempre en UTC
 
-        tickets = response.json().get("tickets", [])
-        now_ts = calendar.timegm(now.utctimetuple())
-        
         for t in tickets:
             if t["status"] in ["disponible", "en carrito"]:
+
+                if t.get("allowed_payment_methods") and t["allowed_payment_methods"] != "all":
+                    allowed_methods = [method.strip().lower() for method in t["allowed_payment_methods"].split(",")]
+                    if payment_method.lower() not in allowed_methods:
+                        continue
 
                 # Comparación segura
                 if t["status"] == "en carrito":
@@ -1935,7 +2009,7 @@ def load_available_tickets():
                     if isinstance(expires_raw, (int, float)):
                         expires_ts = float(expires_raw)
                     elif isinstance(expires_raw, str):
-                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                             try:
                                 expires_dt = datetime.strptime(expires_raw, fmt)
                                 expires_ts = calendar.timegm(expires_dt.utctimetuple())
@@ -1979,6 +2053,7 @@ def load_available_tickets():
             "fee": event.Fee,
             "event_id": event.event_id,
             "BsDExchangeRate": BsDexchangeRate,
+            "additionalFeatures": additional_features_list,
             "status": "ok"
         }), 200
 
@@ -2016,7 +2091,10 @@ def load_boleteria():
             )
             .filter(
                 Ticket.event_id == event.event_id,
-                Ticket.status == 'pagado'
+                or_
+                (Ticket.status == 'pagado',
+                Ticket.status == 'reservado',
+                Ticket.blockedBy != None)
             )
             .all()
         )
@@ -2181,7 +2259,7 @@ def load_map():
         params = {"query": query}
 
         # Verificación de certificado configurable (True por defecto)
-        verify = current_app.config.get("REQUESTS_VERIFY", True)
+        verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
 
         req_start = time.perf_counter()
         try:
@@ -2350,6 +2428,152 @@ def load_map():
         total_end = time.perf_counter()
         logging.error(f"❌ Error en request tras {total_end - start_time:.4f} segundos")
         return jsonify({"message": f"Error en el request: {str(e)}"}), 500
+
+@backend.route('/new-massive-block-of-tickets', methods=['PUT']) #permite subir un csv o excel con los boletos que han sido bloqueados para tickeras o ventas de terceros
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def new_massive_block_of_tickets():
+    try:
+        user_id = get_jwt().get("id")
+
+        # 1. Extraer datos del formulario
+        event_id = request.args.get('query', '')
+        seat_file = request.files.get('seatFile')
+
+        now = datetime.now(timezone.utc).replace(tzinfo=timezone.utc)  # Siempre en UTC
+
+        if not all([event_id, seat_file]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        if not allowed_file(seat_file.filename):
+            return jsonify({'message': 'Formato de archivo no permitido', 'status': 'error'}), 400
+        
+        event = Event.query.filter_by(event_id=event_id).first()
+
+        venue_id = event.venue_id
+
+        # 2. Leer el archivo con pandas (soporta csv y excel)
+        if seat_file.filename.endswith('.csv'):
+            df = pd.read_csv(seat_file)
+        else:
+            df = pd.read_excel(seat_file)
+
+        # Normalizamos nombres de columnas
+        df.columns = df.columns.str.strip().str.lower()
+
+        # Validar que tenga las columnas correctas
+        required_cols = {'asiento', 'seccion', 'by', 'fee', 'discount'}
+        if not required_cols.issubset(df.columns):
+            return jsonify({'message': 'El archivo no tiene las columnas requeridas', 'status': 'error'}), 400
+
+        # 5. Procesar cada fila del archivo
+        for _, row in df.iterrows():
+            asiento = str(row['asiento']).strip()
+            seccion = str(row['seccion']).strip()
+            discount = str(row['discount']).strip()
+            fee = str(row['fee']).strip()
+            by = str(row['by']).strip()
+
+            # Dividir el asiento en fila y número
+            row_label = ''.join([ch for ch in asiento if ch.isalpha()])
+            number = ''.join([ch for ch in asiento if ch.isdigit()])
+
+            section = Section.query.filter(
+                and_(Section.name == seccion, Section.venue_id == venue_id)
+            ).first()
+
+            if not section:
+                return jsonify({'message': f'No se encontró la sección {seccion} en el venue', 'status': 'error'}), 400
+
+            seat = Seat.query.filter_by(section_id=section.section_id, row=row_label, number=number).first()
+
+            if not seat:
+                return jsonify({'message': f"No se encontró el asiento {asiento} de la fila {row_label} de la seccion {seccion}", 'status': 'error'}), 400
+
+            # Modificar Ticket
+            ticket = Ticket.query.filter(
+                and_(Ticket.seat_id == seat.seat_id, Ticket.event_id == event_id)
+            ).first()
+
+            if not ticket:
+                return jsonify({'message': f'No se encontró el ticket para el asiento {asiento} de la fila {row_label} de la seccion {seccion}', 'status': 'error'}), 400
+
+            if ticket.status not in ['disponible', 'en carrito']:
+                return jsonify({'message': f"El asiento {asiento} de la fila {row_label} de la seccion {seccion} no esta disponible, modifique su status antes de bloquearlo", 'status': 'error'}), 400
+            
+            if ticket.status == 'en carrito':
+                if ticket.expires_at and ticket.expires_at.tzinfo is None:
+                    expires_at_aware = ticket.expires_at.replace(tzinfo=timezone.utc)
+                else:
+                    expires_at_aware = ticket.expires_at # Ya tiene info de zona horaria
+                if expires_at_aware > now:
+                    return jsonify({'message': f"El asiento {asiento} de la fila {row_label} de la seccion {seccion} está en carrito por otro usuario, no se puede bloquear", 'status': 'error'}), 400
+
+            ticket.status = 'bloqueado'
+            ticket.blockedBy = by
+            ticket.fee = int(fee*100)
+            ticket.discount = int(discount*100)
+
+        log_for_massive_block = Logs(
+            UserID=user_id,
+            Type='bloqueo masivo de boletos',
+            Timestamp=datetime.now(),
+            Details=f"Se han bloqueado tickets de forma masiva para el evento{event.name}",
+        ) 
+        db.session.add(log_for_massive_block)
+
+        db.session.commit()
+
+        return jsonify({'message': 'bloqueo masivo exitoso', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al bloquear boletos: {e}")
+        return jsonify({'message': 'Error al bloquear boletos', 'status': 'error'}), 500
+    
+@backend.route('/unblock-ticket', methods=['GET']) #para desbloquear un boleto vendido por un tercero
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def unblock_ticket():
+    try:
+        user_id = get_jwt().get("id")
+
+        # 1. Extraer datos del formulario
+        ticket_id = request.args.get('query', '')
+
+        if not all([ticket_id]):
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        # Modificar Ticket
+        ticket = Ticket.query.filter(
+            and_(Ticket.ticket_id == int(ticket_id))
+        ).one_or_none()
+
+        if not ticket:
+            return jsonify({'message': f'No se encontró el ticket', 'status': 'error'}), 400
+
+        if ticket.status != 'bloqueado' or not ticket.blockedBy:
+            return jsonify({'message': f"El asiento no se encuentra bloqueado actualmente", 'status': 'error'}), 400
+
+        ticket.status = 'disponible'
+        ticket.blockedBy = None
+        ticket.discount = 0
+        ticket.fee = 0
+
+        log_for_block = Logs(
+            UserID=user_id,
+            Type='boleto desbloqueado',
+            Timestamp=datetime.now(),
+            Details=f"Se ha desbloqueado el ticket de ID {ticket_id} (Asiento {ticket.seat.row}{ticket.seat.number}) del evento {ticket.event.name}",
+        ) 
+        db.session.add(log_for_block)
+
+        db.session.commit()
+
+        return jsonify({'message': 'ticket desbloqueado exitosamente', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al desbloquear ticket: {e}")
+        return jsonify({'message': 'Error al desbloquear ticket', 'status': 'error'}), 500
     
 @backend.route('/block-tickets', methods=['POST'])
 @roles_required(allowed_roles=["admin", "tiquetero"])
@@ -2369,6 +2593,9 @@ def block_tickets():
     cedula = request.json.get('cedula', '').strip()
     address = bleach.clean(request.json.get('shortAddress', ''), strip=True)
     discount_code = bleach.clean(request.json.get('discount_code', ''), strip=True)
+    
+    # Add support for addons (modernization)
+    addons = request.json.get('addons', [])
 
     tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
     tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -2376,7 +2603,7 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 1️⃣ Validaciones iniciales
     # ----------------------------------------------------------------
-    if not all([user_id, payment_method, tickera_id, tickera_api_key, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
+    if not all([user_id, payment_method, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
     if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos"]:
@@ -2421,7 +2648,7 @@ def block_tickets():
             LastName=lastname.strip(),
             Email=email,
             role='passive_customer',
-            status='unverifed',
+            status='unverified',
             CreatedBy=user_id,
             Identification=cedula,
             PhoneNumber=full_phone_number,
@@ -2431,15 +2658,16 @@ def block_tickets():
         db.session.flush()  # para obtener customer_id
 
     # ----------------------------------------------------------------
-    # 4️⃣ Obtener tickets en carrito
+    # 4️⃣ Obtener tickets seleccionados
     # ----------------------------------------------------------------
     ticket_ids = [int(s['ticket_id']) for s in selectedSeats if 'ticket_id' in s]
 
-    tickets_en_carrito = Ticket.query.filter(
-        and_(
-            Ticket.ticket_id.in_(ticket_ids),
-        )
-    ).all()  # Bloquear
+    tickets_en_carrito = Ticket.query.options(
+        joinedload(Ticket.seat).joinedload(Seat.section),
+        joinedload(Ticket.event)
+    ).filter(
+        Ticket.ticket_id.in_(ticket_ids)
+    ).all()
 
     if not tickets_en_carrito or len(tickets_en_carrito) != len(ticket_ids):
         return jsonify({"message": "Algunos tickets no están disponibles"}), 400
@@ -2450,14 +2678,10 @@ def block_tickets():
         return jsonify({"message": "Evento no encontrado o inactivo"}), 404
 
     # ----------------------------------------------------------------
-    # 5️⃣ Bloquear en Tickera (antes de modificar BD local)
+    # 5️⃣ Validar y preparar descuentos
     # ----------------------------------------------------------------
-    url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
-
-    # Normalizar event id
-    event_id = str(event.event_id_provider).strip()
-    if not event_id or not event_id.isdigit() or len(event_id) > 64:
-        raise ValueError("event_id inválido")
+    total_discount = 0
+    discount_id = None
 
     # Sanitizar tickets_en_carrito
     def clean_tickets(list_in):
@@ -2465,20 +2689,16 @@ def block_tickets():
         if not list_in:
             return out
         for i, t in enumerate(list_in):
-            tid = t.ticket_id_provider
+            tid = t.ticket_id_provider if event.from_api else t.ticket_id
             price = t.price
             try:
                 tid_i = int(tid)
             except Exception:
                 continue
-            # Price -> Decimal, >= 0
             out.append({"ticket_id_provider": tid_i, "price": str(price), "discount": str(0)})
             if len(out) >= 200:
                 break
         return out
-
-    total_discount = 0
-    discount_id = None
 
     if discount_code:
         discount_code = bleach.clean(discount_code.upper(), strip=True)
@@ -2491,74 +2711,85 @@ def block_tickets():
     else:
         tickets_payload = clean_tickets(tickets_en_carrito)
 
-    if not tickets_payload:
-        raise ValueError("No hay tickets válidos para bloquear")
+    # ----------------------------------------------------------------
+    # 6️⃣ Bloquear en Tickera (solo si event.from_api == True)
+    # ----------------------------------------------------------------
+    if event.from_api:
+        if not all([tickera_id, tickera_api_key]):
+            return jsonify({"message": "Configuración de API externa incompleta"}), 500
+            
+        url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
 
-    payload = {
-        "event": event_id,
-        "tickets": tickets_payload,
-        "type_of_sale": "admin_sale"
-    }
+        # Normalizar event id
+        event_id = str(event.event_id_provider).strip()
+        if not event_id or not event_id.isdigit() or len(event_id) > 64:
+            raise ValueError("event_id inválido")
 
-    # Session con retries
-    session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
-    )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
+        if not tickets_payload:
+            raise ValueError("No hay tickets válidos para bloquear")
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "FiestaTickets/1.0",
-        "X-Tickera-Id": str(tickera_id),
-        "X-Tickera-Api-Key": str(tickera_api_key)
-    }
+        payload = {
+            "event": event_id,
+            "tickets": tickets_payload,
+            "type_of_sale": "admin_sale"
+        }
 
-    verify = current_app.config.get("REQUESTS_VERIFY", True)
-    # Initialize holder so later local DB logic can run using this response if needed
-    try:
-        response = session.post(
-            url_block,
-            json=payload,
-            headers=headers,
-            timeout=(5, 30),
-            allow_redirects=False,
-            verify=verify
+        # Session con retries
+        session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
         )
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
 
-        content_type = response.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            logging.error("Respuesta inesperada de Tickera en block-tickets: Content-Type no es JSON")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "FiestaTickets/1.0",
+            "X-Tickera-Id": str(tickera_id),
+            "X-Tickera-Api-Key": str(tickera_api_key)
+        }
+
+        verify = current_app.config.get("REQUESTS_VERIFY", 'True') == 'True'
+        try:
+            response = session.post(
+                url_block,
+                json=payload,
+                headers=headers,
+                timeout=(5, 30),
+                allow_redirects=False,
+                verify=verify
+            )
+
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                logging.error("Respuesta inesperada de Tickera en block-tickets: Content-Type no es JSON")
+                response.raise_for_status()
+
             response.raise_for_status()
 
-        # Levantar para status >= 400
-        response.raise_for_status()
+            try:
+                data = response.json()
+            except ValueError:
+                logging.error("JSON inválido en respuesta de block-tickets")
+                raise
 
-        try:
-            data = response.json()
-        except ValueError:
-            logging.error("JSON inválido en respuesta de block-tickets")
+            block_response = data
+
+        except requests.exceptions.RequestException:
+            logging.exception("Error comunicándose con Tickera (block-tickets)")
             raise
-
-        # store the response instead of returning early so local changes can be applied
-        block_response = data
-
-    except requests.exceptions.RequestException:
-        logging.exception("Error comunicándose con Tickera (block-tickets)")
-        raise
-    finally:
-        try:
-            session.close()
-        except Exception:
-            pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
     # ----------------------------------------------------------------
-    # 6️⃣ Aplicar cambios locales (una sola transacción)
+    # 7️⃣ Aplicar cambios locales (una sola transacción)
     # ----------------------------------------------------------------
     try:
         total_price = sum(t.price for t in tickets_en_carrito)
@@ -2584,6 +2815,31 @@ def block_tickets():
         db.session.add(sale)
         db.session.flush()
 
+        # ----------------------------------------------------------------
+        # 8️⃣ Validar y registrar addons (modernización)
+        # ----------------------------------------------------------------
+        validated_addons = []
+        
+        if addons:
+            validation_response = utils.validate_addons(addons, event, payment_method, tickets_en_carrito)
+            if isinstance(validation_response, tuple):  # Si es una respuesta de error
+                logging.info(validation_response)
+                return validation_response  # Retorna el error directamente
+            
+            validated_addons = validation_response
+
+            for addon in validated_addons:
+                purchased_feature = utils.record_purchased_feature(
+                    sale.sale_id,
+                    int(addon["FeatureID"]),
+                    int(addon["Quantity"]),
+                    int(addon["FeaturePrice"])
+                )
+                db.session.add(purchased_feature)
+                total_price += int(addon["Quantity"]) * int(addon["FeaturePrice"])
+            sale.price = total_price
+            db.session.flush()
+
         # Actualizar tickets
         for t in tickets_en_carrito:
             t.status = payment_status
@@ -2607,7 +2863,7 @@ def block_tickets():
         db.session.add(payment)
 
         # ----------------------------------------------------------------
-        # 7️⃣ Enviar notificación según método de pago
+        # 9️⃣ Enviar notificación según método de pago
         # ----------------------------------------------------------------
         serializer = current_app.config['serializer']
         token = serializer.dumps({'user_id': user_id, 'sale_id': sale.sale_id})
@@ -2623,9 +2879,9 @@ def block_tickets():
             'venue': sale.event_rel.venue.name,
             'date': sale.event_rel.date_string,
             'hour': sale.event_rel.hour_string,
-            'price': round(sale.price / 10000, 2),
+            'price': round(sale.price / 100, 2),
             'discount': round(sale.discount / 100, 2),
-            'fee': round(sale.fee / 10000, 2),
+            'fee': round(sale.fee / 100, 2),
             'total_abono': round((total_price + sale.fee - sale.discount) / 100, 2),
             'due': round(0, 2),
             'payment_method': payment_method.capitalize(),
@@ -2636,6 +2892,9 @@ def block_tickets():
             'status': 'pagado',
             'title': 'Estamos procesando tu abono',
             'subtitle': 'Te notificaremos una vez que haya sido aprobado',
+            'add_ons': validated_addons if validated_addons else None,
+            'is_package_tour': event.type_of_event == 'paquete_turistico',
+            'currency': 'usd'
         } 
         
         if total_discount > 0:
@@ -2692,26 +2951,38 @@ def customize_reservation():
         return out
 
     def build_tickets_from_sale(sale):
-        tickets = []
         raw_ids = sale.ticket_ids or ''
-        ticket_ids = raw_ids.split('|') if '|' in raw_ids else [raw_ids]
-        for ticket_id in ticket_ids:
-            if not ticket_id:
-                continue
-            ticket = Ticket.query.get(int(ticket_id))
-            if not ticket:
-                continue
-            seat = Seat.query.get(ticket.seat_id) if ticket.seat_id else None
-            section = Section.query.get(seat.section_id) if seat and seat.section_id else None
-            tickets.append({
-                'ticket_id': ticket.ticket_id,
-                'price': format_amount(ticket.price),
-                'status': ticket.status,
-                'section': section.name if section else None,
-                'row': seat.row if seat else None,
-                'number': seat.number if seat else None,
-                'QRlink': (f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={ticket.saleLink}') if sale.StatusFinanciamiento == 'pagado' else None
-            })
+        ticket_ids = [int(t) for t in raw_ids.split('|') if t.isdigit()]
+        tickets = []
+
+        if ticket_ids:
+            tickets_q = Ticket.query.options(
+                load_only(Ticket.ticket_id, Ticket.price, Ticket.status),
+                joinedload(Ticket.seat)
+                    .load_only(Seat.row, Seat.number, Seat.section_id)
+                    .joinedload(Seat.section)
+                    .load_only(Section.name)
+            ).filter(Ticket.ticket_id.in_(ticket_ids)).all()
+
+            tickets_map = {t.ticket_id: t for t in tickets_q}
+
+            # Preserve original order from sale.ticket_ids
+            for tid in ticket_ids:
+                t = tickets_map.get(tid)
+                if not t:
+                    continue
+                seat = t.seat
+                section = seat.section.name if seat and seat.section else None
+                tickets.append({
+                    'ticket_id': t.ticket_id,
+                    'price': round(t.price/100, 2),
+                    'status': t.status,
+                    'section': section.replace('20_',' '),
+                    'row': seat.row if seat else None,
+                    'number': seat.number if seat else None,
+                    'QRlink': (f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={t.saleLink}') if sale.StatusFinanciamiento == 'pagado' else None
+                })
+
         return tickets
 
     def parse_due_dates_field(due_dates_field):
@@ -2755,6 +3026,22 @@ def customize_reservation():
         fee = sale.fee if sale.fee else 0
         discount = sale.discount if sale.discount else 0
 
+        features = []
+
+        if sale.purchased_features:
+            purchased_features = sale.purchased_features
+            
+
+            for feature_entry in purchased_features:
+                characteristics = feature_entry.feature
+                features.append({
+                    'FeatureID': feature_entry.FeatureID,
+                    'FeatureName': characteristics.FeatureName,
+                    'FeatureDescription': characteristics.FeatureDescription,
+                    'FeaturePrice': round(feature_entry.PurchaseAmount/100, 2),
+                    'Quantity': feature_entry.Quantity
+                })
+                
         common_info = {
             'payments': payments_list,
             'items': tickets,
@@ -2773,7 +3060,8 @@ def customize_reservation():
             'StatusFinanciamiento': sale.StatusFinanciamiento,
             'Fullname': [(sale.customer.FirstName + ' ' + sale.customer.LastName) if sale.customer else ''],
             'Email': [sale.customer.Email if sale.customer else ''],
-            'sale_id': sale.sale_id
+            'sale_id': sale.sale_id,
+            'features': features
         }
 
         information = {}
@@ -2844,7 +3132,11 @@ def new_abono():
         fee = sale.fee if sale.fee else 0
         discount = sale.discount if sale.discount else 0
 
-        if (sale.paid + fee + received - discount) > sale.price:
+        # BUG FIX: Verificar que el total pagado no exceda el total a pagar
+        # Total a pagar = (precio base + fee - descuento)
+        total_due = sale.price + fee - discount
+        total_after_payment = sale.paid + received
+        if total_after_payment > total_due:
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         log_for_abono = Logs(
@@ -3016,10 +3308,11 @@ def approve_abono():
         if payment.sale.status == 'cancelado':
             return jsonify({'message': 'La venta está cancelada, no se pueden agregar abonos', 'status': 'error'}), 400
         
+        # NOTA: Todos los valores ya están en centavos (int), pero usamos int() como medida defensiva
         total_due = int(payment.sale.price + payment.sale.fee - payment.sale.discount)
         total_after_payment = int(payment.sale.paid + received)
 
-        if (total_after_payment - total_due ) > 0:  # margen de 500 centavos (5 unidades monetarias)
+        if (total_after_payment - total_due) > 0:
             return jsonify({'message': 'El monto abonado excede el total de la venta. El abono no puede ser procesado.', 'status': 'error'}), 400
 
         # 3️⃣ Datos auxiliares
@@ -3051,7 +3344,7 @@ def approve_abono():
                 'ticket_id': ticket.ticket_id,
                 'row': ticket.seat.row,
                 'number': ticket.seat.number,
-                'section': ticket.seat.section.name,
+                'section': ticket.seat.section.name.replace('20_',' '),
                 'event': ticket.price,
                 'price': round(ticket.price / 100, 2)
             }
@@ -3093,35 +3386,37 @@ def approve_abono():
                 if cancel_reservation:
                     payment.sale.status = 'cancelado'
 
-                    # 🔗 Llamar a Tickera para liberar los tickets bloqueados
-                    try:
-                        tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
-                        tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
-                        url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
+                    if event.from_api and tickets_to_release:
 
-                        logging.info("Liberando tickets en Tickera...")
+                        # 🔗 Llamar a Tickera para liberar los tickets bloqueados
+                        try:
+                            tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+                            tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+                            url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
 
-                        payload = {
-                            "event": event.event_id_provider,
-                            "tickets": tickets_to_release,
-                            "tickera_id": tickera_id,
-                            "tickera_api_key": tickera_api_key
-                        }
+                            logging.info("Liberando tickets en Tickera...")
 
-                        response_block = requests.post(url_block, json=payload, timeout=60)
+                            payload = {
+                                "event": event.event_id_provider,
+                                "tickets": tickets_to_release,
+                                "tickera_id": tickera_id,
+                                "tickera_api_key": tickera_api_key
+                            }
 
-                        if response_block.status_code != 200:
+                            response_block = requests.post(url_block, json=payload, timeout=60)
+
+                            if response_block.status_code != 200:
+                                db.session.rollback()
+                                return jsonify({
+                                    "status": "error",
+                                    "code": response_block.status_code,
+                                    "message": response_block.json().get("message", "Error desconocido en Tickera")
+                                }), response_block.status_code
+
+                        except requests.exceptions.RequestException as e:
                             db.session.rollback()
-                            return jsonify({
-                                "status": "error",
-                                "code": response_block.status_code,
-                                "message": response_block.json().get("message", "Error desconocido en Tickera")
-                            }), response_block.status_code
-
-                    except requests.exceptions.RequestException as e:
-                        db.session.rollback()
-                        logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
-                        return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
+                            logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
+                            return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
 
                 sale_data = {
                     'sale_id': payment.sale.sale_id,
@@ -3200,7 +3495,9 @@ def approve_abono():
             
 
             # Verificar si ya está completamente pagada
-            if int(round(payment.sale.paid + payment.sale.discount, 2)) >= int(round(payment.sale.price + payment.sale.fee, 2)):
+            # NOTA: Los valores están en centavos (integers), no necesitan rounding
+            # Se compara: monto_pagado + descuento >= precio_total + fee
+            if (payment.sale.paid + payment.sale.discount) >= (payment.sale.price + payment.sale.fee):
 
                 # ---------------------------------------------------------------
                 # 7️⃣ Llamar a la API para calcular la tasa en bolivares BCV
@@ -3243,12 +3540,37 @@ def approve_abono():
 
                 tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
                 total_price = payment.sale.price
+                total_price_addons = 0
+                total_price_tickets = 0
+
+                #chequeamos si hay addons
+                add_ons = payment.sale.purchased_features
+                add_ons_list = []
+                if add_ons:
+                    total_price_addons = 0
+                    for addon in add_ons:
+                        feature = addon.feature
+                        if feature:
+                            add_ons_list.append({
+                                'FeatureName': feature.FeatureName,
+                                'FeatureDescription': feature.FeatureDescription,
+                                'FeaturePrice': round(addon.PurchaseAmount/100, 2),
+                                'TotalPrice': round((addon.PurchaseAmount * addon.Quantity)/100, 2),
+                                'Quantity': addon.Quantity
+                            })
+                            total_price_addons += addon.PurchaseAmount * addon.Quantity
+
+                total_price_tickets = total_price - total_price_addons
 
                 if not tickets_a_emitir:
                     return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
                 
                 if len(tickets_a_emitir) != len(ticket_ids):
                     return jsonify({'message': 'No se encontraron todos los tickets asociados a la venta', 'status': 'error'}), 400
+                
+                # Validar que total_price no sea cero para evitar división por cero
+                if not total_price or total_price == 0:
+                    return jsonify({'message': 'Error: el precio total de la venta no puede ser cero', 'status': 'error'}), 400
                 
                 for ticket in tickets_a_emitir:
 
@@ -3258,7 +3580,7 @@ def approve_abono():
                     discount = 0
 
                     if payment.sale.discount > 0:
-                        proportion = ticket.price / total_price
+                        proportion = ticket.price / total_price_tickets
                         discount = int(round(payment.sale.discount * proportion, 2))
 
                     
@@ -3304,11 +3626,18 @@ def approve_abono():
 
                     total_fee += ticket.fee if ticket.fee else 0
 
-                    utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+                    if event.type_of_event == 'espectaculo':
+                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
                 amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
                 amount_IVA = received - amount_no_IVA
+                if PaymentMethod.lower in utils.usd_payment_methods:
+                    currency = 'usd'
+                else:
+                    currency = 'bsd'
+
+                print(currency)
 
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
@@ -3316,10 +3645,10 @@ def approve_abono():
                     'venue': payment.sale.event_rel.venue.name,
                     'date': payment.sale.event_rel.date_string,
                     'hour': payment.sale.event_rel.hour_string,
-                    'price': round(payment.sale.price*exchangeRate / 10000, 2),
-                    'iva_amount': round(amount_IVA*exchangeRate / 10000, 2),
-                    'net_amount': round(amount_no_IVA*exchangeRate / 10000, 2),
-                    'total_abono': round(received*exchangeRate / 10000, 2),
+                    'price':  round(payment.sale.price / 100, 2),
+                    'iva_amount': round(amount_IVA / 100, 2),
+                    'net_amount': round(amount_no_IVA / 100, 2),
+                    'total_abono': round(received / 100, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
                     'reference': PaymentReference,
@@ -3328,22 +3657,27 @@ def approve_abono():
                     'exchange_rate_bsd': round(exchangeRate/100, 2),
                     'status': 'aprobado',
                     'title': 'Tu pago ha sido procesado exitosamente',
-                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura'
+                    'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu recibo',
+                    'is_package_tour': payment.sale.event_rel.type_of_event == 'paquete_turistico',
+                    'currency': currency,
+                    'add_ons': add_ons_list
                 }
 
                 try:
                 # Actualizar métricas del evento
+                # NOTA: Solo se incrementan las métricas cuando la venta se completa por primera vez
+                # gross_sales debe ser el precio total de la venta (sale.price), no el monto parcial recibido
                     stmt = (
                         update(Event)
                         .where(Event.event_id == int(event.event_id))
                         .values(
                             total_sales = func.coalesce(Event.total_sales, 0) + 1,
-                            gross_sales = func.coalesce(Event.gross_sales, 0) + (int(received) if received is not None else 0),
-                            total_fees  = func.coalesce(Event.total_fees, 0) + (int(total_fee) if total_fee is not None else 0),
-                            total_discounts = func.coalesce(Event.total_discounts, 0) + (int(payment.sale.discount) if payment.sale.discount is not None else 0),
+                            gross_sales = func.coalesce(Event.gross_sales, 0) + func.coalesce(payment.sale.price, 0),
+                            total_fees  = func.coalesce(Event.total_fees, 0) + func.coalesce(total_fee, 0),
+                            total_discounts = func.coalesce(Event.total_discounts, 0) + func.coalesce(payment.sale.discount, 0),
                             total_discounts_tickera = (
                                 func.coalesce(Event.total_discounts_tickera, 0)
-                                + ((func.coalesce(Event.Fee, 0) * int(payment.sale.discount) / 100) if payment.sale.discount is not None else 0)
+                                + (func.coalesce(Event.Fee, 0) * func.coalesce(payment.sale.discount, 0) / 100)
                             )
                         )
                         .returning(Event.event_id)  # opcional, útil para confirmar
@@ -3392,6 +3726,231 @@ def approve_abono():
         db.session.rollback()
         logging.error(f"Error al registrar abono: {e}")
         return jsonify({'message': 'Error al registrar abono', 'status': 'error'}), 500
+
+@backend.route('/refund', methods=['POST'])  # ruta del admin para procesar reembolsos
+@roles_required(allowed_roles=["admin"])
+def refund():
+    try:
+        user_id = get_jwt().get("id")
+
+        # Extraer datos del formulario (mismos parámetros que approve-abono en rama de rechazo)
+        payment_id = request.json.get('payment_id')
+        received = request.json.get('received', 0) * 100  # Convertir a centavos
+        PaymentMethod = request.json.get('PaymentMethod', 'N/A')
+
+        if not payment_id:
+            return jsonify({'message': 'Falta el payment_id', 'status': 'error'}), 400
+
+        # Buscar el pago por su ID
+        payment = Payments.query.options(
+            joinedload(Payments.sale).joinedload(Sales.customer),
+            joinedload(Payments.sale).joinedload(Sales.event_rel)
+        ).filter(
+            Payments.PaymentID == int(payment_id)
+        ).one_or_none()
+
+        if not payment:
+            return jsonify({'message': 'No se encontró el pago asociado', 'status': 'error'}), 400
+
+        sale = payment.sale
+        if not sale:
+            return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 400
+
+        if sale.status == 'cancelado':
+            return jsonify({'message': 'La venta ya está cancelada', 'status': 'error'}), 400
+
+        customer = sale.customer
+        event = sale.event_rel
+
+        # Obtener tickets asociados
+        Tickets = []
+        ticket_ids = []
+        raw_ticket_ids = sale.ticket_ids or ''
+        for tid in raw_ticket_ids.split('|'):
+            tid_str = str(tid).strip()
+            if not tid_str:
+                continue
+            try:
+                ticket_ids.append(int(tid_str))
+            except ValueError:
+                logging.warning(f"Ignorando ticket_id inválido: {tid_str}")
+                continue
+
+        tickets_to_release = []
+        tickets = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
+
+        if not tickets:
+            return jsonify({'message': 'No se encontraron los tickets asociados a la venta', 'status': 'error'}), 400
+
+        for ticket in tickets:
+            t = {
+                'ticket_id': ticket.ticket_id,
+                'row': ticket.seat.row,
+                'number': ticket.seat.number,
+                'section': ticket.seat.section.name.replace('20_', ' '),
+                'price': round(ticket.price / 100, 2)
+            }
+            Tickets.append(t)
+            tickets_to_release.append(ticket.ticket_id_provider)
+
+            # Liberar el ticket
+            ticket.status = 'disponible'
+            ticket.sale_id = None
+            ticket.fee = 0
+            ticket.discount = 0
+            ticket.expires_at = None
+            ticket.customer_id = None
+            ticket.blockedBy = None
+            ticket.saleLink = ''
+            ticket.saleLocator = ''
+            ticket.QRlink = ''
+            ticket.availability_status = ''
+
+        # Marcar la venta como cancelada
+        sale.status = 'cancelado'
+
+        # Si el evento es de API, liberar los tickets en Tickera
+        if event and event.from_api and tickets_to_release:
+            try:
+                tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+                tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+                url_release = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
+
+                logging.info("Liberando tickets en Tickera para reembolso...")
+
+                payload = {
+                    "event": event.event_id_provider,
+                    "tickets": tickets_to_release,
+                    "tickera_id": tickera_id,
+                    "tickera_api_key": tickera_api_key
+                }
+
+                response_release = requests.post(url_release, json=payload, timeout=60)
+
+                if response_release.status_code != 200:
+                    db.session.rollback()
+                    return jsonify({
+                        "status": "error",
+                        "code": response_release.status_code,
+                        "message": response_release.json().get("message", "Error desconocido en Tickera")
+                    }), response_release.status_code
+
+            except requests.exceptions.RequestException as e:
+                db.session.rollback()
+                logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
+                return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
+
+        # Registrar el log de reembolso
+        log_for_refund = Logs(
+            UserID=user_id,
+            Type='reembolso',
+            Timestamp=datetime.now(),
+            Details=f"Reembolso procesado para la venta {sale.sale_id} del usuario {customer.Email if customer else 'N/A'}",
+            SaleID=sale.sale_id
+        )
+        db.session.add(log_for_refund)
+
+        # Preparar datos para notificaciones
+        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={sale.saleLink}' if sale.saleLink else ''
+
+        sale_data = {
+            'sale_id': sale.sale_id,
+            'event': event.name if event else 'N/A',
+            'venue': event.venue.name if event and event.venue else 'N/A',
+            'date': event.date_string if event else 'N/A',
+            'hour': event.hour_string if event else 'N/A',
+            'price': round(sale.price / 100, 2),
+            'fee': round(sale.fee / 100, 2),
+            'discount': round(sale.discount / 100, 2),
+            'total_abono': round(received / 100, 2),
+            'payment_method': PaymentMethod,
+            'link_reserva': qr_link,
+            'localizador': sale.saleLocator,
+            'status': 'reembolsado'
+        }
+
+        # Enviar notificación al usuario
+        if customer:
+            try:
+                recipient = customer.Email
+                subject = f'Reembolso procesado para {sale_data["event"]} - Fiesta Ticket'
+
+                msg = Message(subject, sender=current_app.config["MAIL_USERNAME"], recipients=[recipient])
+                msg_html = render_template('refund_notification.html', Tickets=Tickets, sale_data=sale_data)
+                msg.html = msg_html
+
+                mail.send(msg)
+            except Exception as e:
+                logging.error(f"Error enviando email al usuario: {e}")
+
+        # Enviar notificación a los administradores
+        try:
+            admin_subject = f'Reembolso procesado para {sale_data["event"]} - Fiesta Ticket'
+            
+            admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
+            admin_recipients = [admin.Email for admin in admins]
+
+            message_admin = (
+                f'🔄 **REEMBOLSO PROCESADO** 🔄\n\n'
+                f'Hola Equipo,\n\n'
+                f'Se ha procesado un **reembolso** para la venta ID {sale.sale_id} '
+                f'del usuario **{customer.Email if customer else "N/A"}** para el evento **{sale_data["event"]}**.\n\n'
+                f'---\n'
+                f'## 👤 Detalles del Usuario\n'
+                f'- **Nombre Completo:** {customer.FirstName if customer else "N/A"} {customer.LastName if customer else ""}\n'
+                f'- **Email:** {customer.Email if customer else "N/A"}\n'
+                f'- **Teléfono:** {customer.PhoneNumber if customer else "No registrado"}\n'
+                f'- **ID de Cliente:** {customer.CustomerID if customer else "N/A"}\n'
+                f'---\n'
+                f'## 🎫 Detalles de la Venta\n'
+                f'- **Evento:** {sale_data["event"]} ({sale_data["venue"]})\n'
+                f'- **Fecha y Hora:** {sale_data["date"]} a las {sale_data["hour"]}\n'
+                f'- **Localizador:** {sale_data.get("localizador", "N/A")}\n'
+                f'- **Cantidad de Boletos:** {len(Tickets)}\n\n'
+                f'---\n'
+                f'## 🎟️ Boletos Afectados ({len(Tickets)} en total)\n'
+            )
+
+            if Tickets:
+                for i, ticket in enumerate(Tickets, 1):
+                    detalle_ticket = (
+                        f'    {i}. ID: {ticket["ticket_id"]} | '
+                        f'Sección: {ticket["section"].upper()} | '
+                        f'Fila/Número: {ticket["row"]}/{ticket["number"]} | '
+                        f'Precio: ${ticket["price"]}\n'
+                    )
+                    message_admin += detalle_ticket
+
+            message_admin += (
+                f'\n---\n'
+                f'## 💰 Detalles Financieros\n'
+                f'- **Subtotal:** ${sale_data.get("price", "N/A")}\n'
+                f'- **Fee:** ${sale_data.get("fee", "N/A")}\n'
+                f'- **Descuento:** ${sale_data.get("discount", "N/A")}\n'
+                f'- **Total:** ${sale_data.get("price", 0) + sale_data.get("fee", 0) - sale_data.get("discount", 0)}\n\n'
+                f'---\n'
+                f'## 📝 Información Importante\n'
+                f'Todos los boletos y reservas del usuario para este evento **YA NO TIENEN VALIDEZ**.\n'
+                f'El usuario ha sido notificado de esta acción.\n\n'
+                f'Gracias,\n'
+                f'**Equipo de Fiesta Ticket**\n'
+            )
+
+            msg_admin = Message(admin_subject, sender=current_app.config["MAIL_USERNAME"], recipients=admin_recipients)
+            msg_admin.body = message_admin
+
+            mail.send(msg_admin)
+        except Exception as e:
+            logging.error(f"Error enviando email a administradores: {e}")
+
+        db.session.commit()
+
+        return jsonify({'message': 'Reembolso procesado exitosamente', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al procesar reembolso: {e}")
+        return jsonify({'message': 'Error al procesar reembolso', 'status': 'error'}), 500
     
 @backend.route('/cancel-reservation', methods=['GET']) #para cancelar una reserva
 @roles_required(allowed_roles=["admin"])
@@ -3464,6 +4023,407 @@ def cancel_reservation():
         db.session.rollback()
         logging.error(f"Error al dcancelar reserva: {e}")
         return jsonify({'message': 'Error al cancelar reserva', 'status': 'error'}), 500
+
+@backend.route('/upgrade-reservation', methods=['POST'])  # ruta para hacer upgrades a reservas existentes
+@roles_required(allowed_roles=["admin"])
+def upgrade_reservation():
+    try:
+        user_id = get_jwt().get("id")
+
+        # Extraer datos del formulario
+        sale_id = request.json.get('sale_id')
+        new_ticket_ids = request.json.get('new_ticket_ids', [])  # IDs de nuevos tickets
+        addon_ids = request.json.get('addon_ids', [])  # Lista de {feature_id, quantity}
+        additional_payment = request.json.get('additional_payment', 0) * 100  # Dinero adicional en centavos
+        payment_method = request.json.get('payment_method', 'efectivo')
+        payment_reference = request.json.get('payment_reference', '')
+
+        if not sale_id:
+            return jsonify({'message': 'Falta el sale_id', 'status': 'error'}), 400
+
+        # Buscar la venta
+        sale = Sales.query.options(
+            joinedload(Sales.customer),
+            joinedload(Sales.event_rel).joinedload(Event.venue)
+        ).filter(
+            Sales.sale_id == int(sale_id)
+        ).one_or_none()
+
+        if not sale:
+            return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 400
+
+        if sale.status == 'cancelado':
+            return jsonify({'message': 'La venta está cancelada, no se puede hacer upgrade', 'status': 'error'}), 400
+
+        customer = sale.customer
+        event = sale.event_rel
+        old_price = sale.price
+        old_ticket_ids_str = sale.ticket_ids or ''
+
+        # Parse old ticket IDs
+        old_ticket_ids = []
+        for tid in old_ticket_ids_str.split('|'):
+            tid_str = str(tid).strip()
+            if not tid_str:
+                continue
+            try:
+                old_ticket_ids.append(int(tid_str))
+            except ValueError:
+                logging.warning(f"Ignorando ticket_id inválido: {tid_str}")
+                continue
+
+        # Manejar cambio de tickets (si se proporcionan nuevos tickets)
+        tickets_to_release_api = []
+        tickets_to_block_api = []
+        new_price = old_price
+
+        if new_ticket_ids:
+            # Liberar los tickets antiguos
+            old_tickets = Ticket.query.filter(Ticket.ticket_id.in_(old_ticket_ids)).all()
+            for ticket in old_tickets:
+                if event and event.from_api:
+                    tickets_to_release_api.append(ticket.ticket_id_provider)
+                
+                ticket.status = 'disponible'
+                ticket.sale_id = None
+                ticket.fee = 0
+                ticket.discount = 0
+                ticket.expires_at = None
+                ticket.customer_id = None
+                ticket.blockedBy = None
+                ticket.saleLink = ''
+                ticket.saleLocator = ''
+                ticket.QRlink = ''
+                ticket.availability_status = ''
+
+            # Asignar los nuevos tickets
+            new_tickets = Ticket.query.filter(Ticket.ticket_id.in_(new_ticket_ids)).all()
+            
+            if len(new_tickets) != len(new_ticket_ids):
+                db.session.rollback()
+                return jsonify({'message': 'Algunos tickets no fueron encontrados', 'status': 'error'}), 400
+
+            new_price = 0
+            new_ticket_ids_validated = []
+            
+            for ticket in new_tickets:
+                if ticket.status != 'disponible':
+                    db.session.rollback()
+                    return jsonify({'message': f'El ticket {ticket.ticket_id} no está disponible', 'status': 'error'}), 400
+                
+                ticket.status = 'pagado por verificar' if sale.status in ['pendiente pago', 'pagado por verificar'] else 'pagado'
+                ticket.sale_id = sale.sale_id
+                ticket.customer_id = customer.CustomerID if customer else None
+                ticket.fee = event.Fee if event and event.Fee else 0
+                new_price += ticket.price
+                new_ticket_ids_validated.append(str(ticket.ticket_id))
+
+                if event and event.from_api:
+                    tickets_to_block_api.append(ticket.ticket_id_provider)
+
+            # Actualizar los ticket_ids en la venta
+            sale.ticket_ids = '|'.join(new_ticket_ids_validated)
+
+        # Manejar addons
+        addon_total = 0
+        if addon_ids:
+            for addon_data in addon_ids:
+                feature_id = addon_data.get('feature_id')
+                quantity = addon_data.get('quantity', 1)
+                
+                if not feature_id or quantity <= 0:
+                    continue
+
+                feature = AdditionalFeatures.query.filter(
+                    AdditionalFeatures.FeatureID == int(feature_id),
+                    AdditionalFeatures.Active == True
+                ).one_or_none()
+
+                if not feature:
+                    db.session.rollback()
+                    return jsonify({'message': f'El addon {feature_id} no está disponible', 'status': 'error'}), 400
+
+                # Verificar si ya existe este addon para esta venta
+                existing_purchase = PurchasedFeatures.query.filter(
+                    PurchasedFeatures.SaleID == sale.sale_id,
+                    PurchasedFeatures.FeatureID == feature.FeatureID
+                ).one_or_none()
+
+                if existing_purchase:
+                    # Actualizar cantidad
+                    existing_purchase.Quantity += quantity
+                    existing_purchase.PurchaseAmount = feature.FeaturePrice
+                else:
+                    # Crear nuevo registro
+                    purchased_feature = PurchasedFeatures(
+                        SaleID=sale.sale_id,
+                        FeatureID=feature.FeatureID,
+                        Quantity=quantity,
+                        PurchaseAmount=feature.FeaturePrice
+                    )
+                    db.session.add(purchased_feature)
+
+                addon_total += feature.FeaturePrice * quantity
+
+        # Calcular nuevo precio total
+        if new_ticket_ids:
+            sale.price = new_price + addon_total
+        else:
+            sale.price += addon_total
+
+        price_difference = sale.price - old_price
+
+        # Manejar pago adicional
+        if additional_payment > 0:
+            # Crear registro de pago
+            new_payment = Payments(
+                SaleID=sale.sale_id,
+                Amount=additional_payment,
+                PaymentMethod=payment_method,
+                Reference=payment_reference,
+                Status='aprobado',
+                PaymentDate=datetime.now().date(),
+                CreatedBy=user_id,
+                ApprovedBy=user_id,
+                ApprovalDate=datetime.now()
+            )
+            db.session.add(new_payment)
+            sale.paid += additional_payment
+
+        # Llamadas a API si es necesario
+        if event and event.from_api:
+            tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
+            tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
+
+            # Liberar tickets antiguos
+            if tickets_to_release_api:
+                try:
+                    url_release = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/release-tickets"
+                    logging.info("Liberando tickets antiguos en Tickera para upgrade...")
+
+                    payload_release = {
+                        "event": event.event_id_provider,
+                        "tickets": tickets_to_release_api,
+                        "tickera_id": tickera_id,
+                        "tickera_api_key": tickera_api_key
+                    }
+
+                    response_release = requests.post(url_release, json=payload_release, timeout=60)
+
+                    if response_release.status_code != 200:
+                        db.session.rollback()
+                        return jsonify({
+                            "status": "error",
+                            "code": response_release.status_code,
+                            "message": response_release.json().get("message", "Error liberando tickets en Tickera")
+                        }), response_release.status_code
+
+                except requests.exceptions.RequestException as e:
+                    db.session.rollback()
+                    logging.error(f"Error al liberar tickets en Tickera: {str(e)}")
+                    return jsonify({"message": "Error al conectar con Tickera para liberar tickets"}), 502
+
+            # Bloquear nuevos tickets
+            if tickets_to_block_api:
+                try:
+                    url_block = f"{current_app.config['FIESTATRAVEL_API_URL']}/eventos_api/block-tickets"
+                    logging.info("Bloqueando nuevos tickets en Tickera para upgrade...")
+
+                    payload_block = {
+                        "event": event.event_id_provider,
+                        "tickets": tickets_to_block_api,
+                        "tickera_id": tickera_id,
+                        "tickera_api_key": tickera_api_key
+                    }
+
+                    response_block = requests.post(url_block, json=payload_block, timeout=60)
+
+                    if response_block.status_code != 200:
+                        db.session.rollback()
+                        return jsonify({
+                            "status": "error",
+                            "code": response_block.status_code,
+                            "message": response_block.json().get("message", "Error bloqueando tickets en Tickera")
+                        }), response_block.status_code
+
+                except requests.exceptions.RequestException as e:
+                    db.session.rollback()
+                    logging.error(f"Error al bloquear tickets en Tickera: {str(e)}")
+                    return jsonify({"message": "Error al conectar con Tickera para bloquear tickets"}), 502
+
+        # Si la venta ya estaba pagada, emitir los nuevos boletos
+        if sale.status == 'pagado' and new_ticket_ids:
+            serializer = current_app.config['serializer']
+            
+            for ticket_id in new_ticket_ids:
+                ticket = Ticket.query.get(int(ticket_id))
+                if ticket:
+                    ticket.status = 'pagado'
+                    ticket.availability_status = 'Listo para canjear'
+                    ticket.emission_date = datetime.now().date()
+
+                    token = serializer.dumps({'ticket_id': ticket.ticket_id, 'sale_id': sale.sale_id})
+                    localizador = os.urandom(3).hex().upper()
+
+                    ticket.saleLink = token
+                    ticket.saleLocator = localizador
+
+                    qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={token}'
+
+                    sale_data = {
+                        'row': ticket.seat.row,
+                        'number': ticket.seat.number,
+                        'section': ticket.seat.section.name,
+                        'event': event.name,
+                        'venue': event.venue.name,
+                        'date': event.date_string,
+                        'hour': event.hour_string,
+                        'price': round(ticket.price / 100, 2),
+                        'discount': round(ticket.discount / 100, 2),
+                        'fee': round(ticket.fee / 100, 2),
+                        'total': round((ticket.price + ticket.fee - ticket.discount) / 100, 2),
+                        'link_reserva': qr_link,
+                        'localizador': localizador
+                    }
+
+                    if event.type_of_event == 'espectaculo':
+                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+
+        # Registrar log
+        log_for_upgrade = Logs(
+            UserID=user_id,
+            Type='upgrade de reserva',
+            Timestamp=datetime.now(),
+            Details=f"Upgrade procesado para la venta {sale.sale_id}. Precio anterior: {old_price/100}, nuevo precio: {sale.price/100}",
+            SaleID=sale.sale_id
+        )
+        db.session.add(log_for_upgrade)
+
+        # Preparar datos para notificaciones
+        new_tickets_data = []
+        if new_ticket_ids:
+            for ticket_id in new_ticket_ids:
+                ticket = Ticket.query.get(int(ticket_id))
+                if ticket:
+                    new_tickets_data.append({
+                        'ticket_id': ticket.ticket_id,
+                        'row': ticket.seat.row,
+                        'number': ticket.seat.number,
+                        'section': ticket.seat.section.name,
+                        'price': round(ticket.price / 100, 2)
+                    })
+
+        addons_data = []
+        if addon_ids:
+            purchased_features = PurchasedFeatures.query.filter(PurchasedFeatures.SaleID == sale.sale_id).all()
+            for pf in purchased_features:
+                feature = pf.feature
+                if feature:
+                    addons_data.append({
+                        'FeatureName': feature.FeatureName,
+                        'FeatureDescription': feature.FeatureDescription,
+                        'FeaturePrice': round(pf.PurchaseAmount / 100, 2),
+                        'Quantity': pf.Quantity,
+                        'TotalPrice': round((pf.PurchaseAmount * pf.Quantity) / 100, 2)
+                    })
+
+        sale_data = {
+            'sale_id': sale.sale_id,
+            'event': event.name if event else 'N/A',
+            'venue': event.venue.name if event and event.venue else 'N/A',
+            'date': event.date_string if event else 'N/A',
+            'hour': event.hour_string if event else 'N/A',
+            'old_price': round(old_price / 100, 2),
+            'new_price': round(sale.price / 100, 2),
+            'price_difference': round(price_difference / 100, 2),
+            'additional_payment': round(additional_payment / 100, 2),
+            'localizador': sale.saleLocator,
+            'new_tickets': new_tickets_data,
+            'addons': addons_data
+        }
+
+        # Enviar notificación al usuario
+        if customer:
+            try:
+                recipient = customer.Email
+                subject = f'Upgrade de reserva para {sale_data["event"]} - Fiesta Ticket'
+
+                msg = Message(subject, sender=current_app.config["MAIL_USERNAME"], recipients=[recipient])
+                msg_html = render_template('upgrade_notification.html', sale_data=sale_data)
+                msg.html = msg_html
+
+                mail.send(msg)
+            except Exception as e:
+                logging.error(f"Error enviando email al usuario: {e}")
+
+        # Enviar notificación a los administradores
+        try:
+            admin_subject = f'Upgrade de reserva procesado para {sale_data["event"]} - Fiesta Ticket'
+            
+            admins = EventsUsers.query.filter(EventsUsers.role.in_(["admin", "tiquetero"])).all()
+            admin_recipients = [admin.Email for admin in admins]
+
+            message_admin = (
+                f'⬆️ **UPGRADE DE RESERVA PROCESADO** ⬆️\n\n'
+                f'Hola Equipo,\n\n'
+                f'Se ha procesado un **upgrade** para la venta ID {sale.sale_id} '
+                f'del usuario **{customer.Email if customer else "N/A"}** para el evento **{sale_data["event"]}**.\n\n'
+                f'---\n'
+                f'## 👤 Detalles del Usuario\n'
+                f'- **Nombre Completo:** {customer.FirstName if customer else "N/A"} {customer.LastName if customer else ""}\n'
+                f'- **Email:** {customer.Email if customer else "N/A"}\n'
+                f'- **ID de Cliente:** {customer.CustomerID if customer else "N/A"}\n'
+                f'---\n'
+                f'## 🎫 Detalles del Upgrade\n'
+                f'- **Evento:** {sale_data["event"]} ({sale_data["venue"]})\n'
+                f'- **Localizador:** {sale_data.get("localizador", "N/A")}\n'
+                f'- **Precio Anterior:** ${sale_data["old_price"]}\n'
+                f'- **Precio Nuevo:** ${sale_data["new_price"]}\n'
+                f'- **Diferencia:** ${sale_data["price_difference"]}\n'
+                f'- **Pago Adicional:** ${sale_data["additional_payment"]}\n\n'
+            )
+
+            if new_tickets_data:
+                message_admin += f'---\n## 🎟️ Nuevos Boletos ({len(new_tickets_data)} en total)\n'
+                for i, ticket in enumerate(new_tickets_data, 1):
+                    message_admin += (
+                        f'    {i}. ID: {ticket["ticket_id"]} | '
+                        f'Sección: {ticket["section"].upper()} | '
+                        f'Fila/Número: {ticket["row"]}/{ticket["number"]} | '
+                        f'Precio: ${ticket["price"]}\n'
+                    )
+
+            if addons_data:
+                message_admin += f'\n---\n## ➕ Addons Agregados ({len(addons_data)} en total)\n'
+                for i, addon in enumerate(addons_data, 1):
+                    message_admin += (
+                        f'    {i}. {addon["FeatureName"]} | '
+                        f'Cantidad: {addon["Quantity"]} | '
+                        f'Precio Unitario: ${addon["FeaturePrice"]} | '
+                        f'Total: ${addon["TotalPrice"]}\n'
+                    )
+
+            message_admin += (
+                f'\n---\n'
+                f'Gracias,\n'
+                f'**Equipo de Fiesta Ticket**\n'
+            )
+
+            msg_admin = Message(admin_subject, sender=current_app.config["MAIL_USERNAME"], recipients=admin_recipients)
+            msg_admin.body = message_admin
+
+            mail.send(msg_admin)
+        except Exception as e:
+            logging.error(f"Error enviando email a administradores: {e}")
+
+        db.session.commit()
+
+        return jsonify({'message': 'Upgrade procesado exitosamente', 'status': 'ok'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al procesar upgrade: {e}")
+        return jsonify({'message': 'Error al procesar upgrade', 'status': 'error'}), 500
     
 @backend.route('/modify-reservation', methods=['POST']) #para modificarr una reserva (nombre o email)
 @roles_required(allowed_roles=["admin", "tiquetero"])
@@ -3706,7 +4666,11 @@ def load_users():
         roles = [r for r in roles_str.split(',') if r] if roles_str else []
         statuses = [s for s in statuses_str.split(',') if s] if statuses_str else []
 
-        # Single query for total users and totals por role (mantengo tu lógica original)
+        # Single query for total users and counts by role
+        # NOTA: nullif(role != 'admin', True) cuenta admins porque:
+        # - Si role != 'admin' es True (no es admin), devuelve NULL
+        # - Si role != 'admin' es False (es admin), devuelve False
+        # - COUNT solo cuenta valores no-NULL, por lo que cuenta cuando role == 'admin'
         total_users, total_admins, total_tiqueteros, total_customers, total_passive_customers = db.session.query(
             func.count(EventsUsers.CustomerID),
             func.count(func.nullif(EventsUsers.role != 'admin', True)),

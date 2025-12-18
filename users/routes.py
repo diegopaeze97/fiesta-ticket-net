@@ -16,8 +16,11 @@ import eventos.utils as utils
 from extensions import mail
 from decorators.utils import optional_roles, roles_required
 import signup.utils as signup_utils
+import users.utils as users_utils
+import uuid
 
 users = Blueprint('users', __name__)
+
 
 @users.route('/register', methods=['POST'])
 def register():
@@ -539,3 +542,394 @@ def recovery_password_verify_code():
     except Exception as e:
         logging.error(f"Error en la validación del código de verificación: {e}")
         return jsonify({'message': 'Ocurrió un error inesperado.'}), 500
+    
+@users.route('/update_personal_info', methods=['PUT']) #esta ruta se usa para llenar informacion faltante en el perfil de usuario, principalemnte cuando crea la cuenta con social login
+@jwt_required()
+def update_personal_info():
+    user_id = get_jwt()['id']
+    phone = request.json.get("telefono", "").strip()
+    cedula = bleach.clean(request.json.get("cedula", ""), strip=True)
+    cedula_type = bleach.clean(request.json.get("cedula_type", ""), strip=True)
+    codigo_pais = bleach.clean(request.json.get("codigo_pais", ""), strip=True) 
+    address = bleach.clean(request.json.get("direccion", ""), strip=True)
+    try:
+        identification = f"{cedula_type.upper()}{cedula}"
+        phone = f"{codigo_pais}{phone}"
+        update = users_utils.update_user_info(user_id, codigo_pais, phone, identification, address)
+
+        if update[1] != 200:
+            return update
+
+        db.session.commit()
+        return jsonify({'status': 'ok', 'message': 'Información actualizada correctamente.'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al actualizar la información personal: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al actualizar la información.'}), 500
+    
+@users.route('/profile', methods=['GET'])
+@roles_required(['admin', 'customer', 'tiquetero', 'provider', 'super_admin'])
+def get_profile():
+    """Obtener información del perfil del usuario autenticado"""
+    try:
+        # Obtener el ID del usuario del JWT
+        claims = get_jwt()
+        user_id = claims.get('id')
+        
+        # Consultar el usuario
+        user = EventsUsers.query.filter_by(CustomerID=user_id).one_or_none()
+        
+        if user is None:
+            return jsonify({'status': 'error', 'message': 'Usuario no encontrado'}), 404
+        
+        # Nombre
+        firstname = user.FirstName or ''
+        lastname = user.LastName or ''
+        
+        # Extraer código de país del teléfono (formato E.164: +58...)
+        codigo_pais = user.CountryCode or ''
+        phone = user.PhoneNumber or ''
+
+        
+        # Extraer tipo de cédula (V/E) y número
+        cedula_type = ""
+        cedula = ""
+        if user.Identification:
+            # El formato es V12345678 o E12345678
+            if len(user.Identification) > 0 and user.Identification[0] in ['V', 'E']:
+                cedula_type = user.Identification[0]
+                cedula = user.Identification[1:]
+            else:
+                cedula = user.Identification
+        
+        # Construir respuesta
+        response_data = {
+            'status': 'ok',
+            'firstname': firstname,
+            'lastname': lastname,
+            'email': user.Email or '',
+            'phone': phone,
+            'address': user.Address or '',
+            'identification': cedula,
+            'cedula_type': cedula_type,
+            'codigo_pais': codigo_pais,
+            'profile_photo': user.MainPicture or ''
+        }
+
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        logging.error(f"Error obteniendo perfil: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al obtener el perfil'}), 500
+
+@users.route('/update_personal_info_panel', methods=['PUT'])
+@roles_required(['admin', 'customer', 'tiquetero', 'provider', 'super_admin'])
+def update_personal_info_panel():
+    """Actualizar información personal del usuario"""
+    try:
+        # Obtener el ID del usuario del JWT
+        claims = get_jwt()
+        user_id = claims.get('id')
+        
+        # Obtener datos del request
+        firstname = bleach.clean(request.json.get('firstname', ''), strip=True)
+        lastname = bleach.clean(request.json.get('lastname', ''), strip=True)
+        cedula = bleach.clean(request.json.get('cedula', ''), strip=True)
+        cedula_type = bleach.clean(request.json.get('cedula_type', ''), strip=True)
+        telefono = bleach.clean(request.json.get('telefono', ''), strip=True)
+        direccion = bleach.clean(request.json.get('direccion', ''), strip=True)
+        codigo_pais = bleach.clean(request.json.get('codigo_pais', ''), strip=True)
+        
+        # Validaciones
+        
+        if not firstname or not lastname:
+            return jsonify({'status': 'error', 'message': 'El nombre no puede estar vacío'}), 400
+        
+        # Validar longitud de nombre y apellido
+        if len(firstname) > 50 or len(lastname) > 50:
+            return jsonify({'status': 'error', 'message': 'El nombre y apellido no deben exceder los 50 caracteres'}), 400
+
+        # Validar cédula
+        if cedula and cedula_type:
+            full_cedula = f"{cedula_type.upper()}{cedula}"
+            if not utils.cedula_pattern.match(full_cedula):
+                return jsonify({'status': 'error', 'message': 'Formato de cédula inválido'}), 400
+        
+        # Validar y construir teléfono con código de país
+        if telefono:
+            
+            # Validar formato E.164
+            if not utils.phone_pattern.match(telefono):
+                return jsonify({'status': 'error', 'message': 'Formato de teléfono inválido'}), 400
+        
+        # Consultar el usuario
+        user = EventsUsers.query.filter_by(CustomerID=user_id).one_or_none()
+        
+        if user is None:
+            return jsonify({'status': 'error', 'message': 'Usuario no encontrado'}), 404
+        
+        # Actualizar campos
+        user.FirstName = firstname
+        user.LastName = lastname
+        
+        if cedula and cedula_type:
+            user.Identification = f"{cedula_type.upper()}{cedula}"
+        
+        if telefono:
+            user.PhoneNumber = telefono
+            user.CountryCode = codigo_pais
+        
+        if direccion:
+            user.Address = direccion
+        
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'ok',
+            'message': 'Información actualizada correctamente'
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error actualizando información personal: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al actualizar la información'}), 500
+
+@users.route('/change_password', methods=['PUT'])
+@roles_required(['admin', 'customer', 'tiquetero', 'provider', 'super_admin'])
+def change_password():
+    """Cambiar la contraseña del usuario"""
+    try:
+        # Obtener el ID del usuario del JWT
+        claims = get_jwt()
+        user_id = claims.get('id')
+        
+        # Obtener datos del request
+        current_password = request.json.get('current_password', '').strip()
+        new_password = request.json.get('new_password', '').strip()
+        
+        # Validaciones
+        if not current_password or not new_password:
+            return jsonify({'status': 'error', 'message': 'Contraseña actual y nueva son requeridas'}), 400
+        
+        # Consultar el usuario
+        user = EventsUsers.query.filter_by(CustomerID=user_id).one_or_none()
+        
+        if user is None:
+            return jsonify({'status': 'error', 'message': 'Usuario no encontrado'}), 404
+        
+        # Verificar contraseña actual
+        if not check_password_hash(user.Password, current_password):
+            return jsonify({'status': 'error', 'message': 'La contraseña actual es incorrecta'}), 401
+        
+        # Validar fortaleza de la nueva contraseña
+        if not signup_utils.strong_password_pattern.match(new_password):
+            return jsonify({'status': 'error', 'message': 'La nueva contraseña no es lo suficientemente segura. Debe contener al menos 6 caracteres.'}), 400
+        
+        # Hashear y actualizar la nueva contraseña
+        hashed_password = generate_password_hash(new_password)
+        user.Password = hashed_password
+        
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'ok',
+            'message': 'Contraseña actualizada correctamente'
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error cambiando contraseña: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al cambiar la contraseña'}), 500
+
+@users.route('/upload_profile_photo', methods=['POST'])
+@roles_required(['admin', 'customer', 'tiquetero', 'provider', 'super_admin'])
+def upload_profile_photo():
+    """Subir foto de perfil del usuario"""
+
+    S3_BUCKET = current_app.config.get('S3_BUCKET')
+    try:
+        # Obtener el ID del usuario del JWT
+        claims = get_jwt()
+        user_id = claims.get('id')
+        
+        # Verificar que se envió un archivo
+        if 'photo' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No se envió ningún archivo'}), 400
+        
+        file = request.files['photo']
+        
+        if file.filename == '':
+            return jsonify({'status': 'error', 'message': 'No se seleccionó ningún archivo'}), 400
+        
+        # Validar que sea una imagen
+        allowed_mime_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+        if file.content_type not in allowed_mime_types:
+            return jsonify({'status': 'error', 'message': 'El archivo debe ser una imagen (JPEG, PNG, GIF o WebP)'}), 400
+        
+        # Validar tamaño (5MB máximo)
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)  # Regresar al inicio
+        
+        max_size = 5 * 1024 * 1024  # 5MB en bytes
+        if file_size > max_size:
+            return jsonify({'status': 'error', 'message': 'El archivo no debe superar los 5MB'}), 400
+        
+        # Consultar el usuario
+        user = EventsUsers.query.filter_by(CustomerID=user_id).one_or_none()
+        
+        if user is None:
+            return jsonify({'status': 'error', 'message': 'Usuario no encontrado'}), 404
+        
+        # Eliminar foto anterior de S3 si existe
+        if user.MainPicture and user.MainPicture.startswith(f"https://{S3_BUCKET}.s3.amazonaws.com/"):
+            try:
+                # Extraer la key del URL de S3
+                # URL formato: https://bucket.s3.amazonaws.com/path/to/file
+                if S3_BUCKET in user.MainPicture:
+                    # Extraer la parte después del bucket
+                    parts = user.MainPicture.split(f"{S3_BUCKET}.s3.amazonaws.com/")
+                    if len(parts) > 1:
+                        old_key = parts[1]
+                        s3.delete_object(Bucket=S3_BUCKET, Key=old_key)
+            except Exception as e:
+                logging.warning(f"Error eliminando foto anterior: {e}")
+        
+        # Generar nombre único para el archivo
+        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else 'jpg'
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"profile_photos/{user_id}/{timestamp}_{uuid.uuid4().hex[:8]}.{file_extension}"
+        
+        # Subir a S3
+        s3.upload_fileobj(
+            file,
+            S3_BUCKET,
+            filename,
+            ExtraArgs={'ContentType': file.content_type}
+        )
+        
+        # Construir URL
+        photo_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{filename}"
+        
+        # Actualizar MainPicture en la base de datos
+        user.MainPicture = photo_url
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'ok',
+            'message': 'Foto de perfil actualizada correctamente',
+            'photo_url': photo_url
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error subiendo foto de perfil: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al subir la foto'}), 500
+
+@users.route('/purchase_history', methods=['GET'])
+@roles_required(['admin', 'customer', 'tiquetero', 'provider', 'super_admin'])
+def get_purchase_history():
+    """Obtener el historial de compras del usuario autenticado"""
+    try:
+        # Obtener el ID del usuario del JWT
+        claims = get_jwt()
+        user_id = claims.get('id')
+        
+        # Obtener parámetros de paginación
+        page = request.args.get('page', 1, type=int)
+        per_page = 5
+
+        # Consultar las ventas del usuario con joins y paginación
+        sales_query = Sales.query.options(
+            joinedload(Sales.event_rel).joinedload(Event.venue),
+            joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section),
+            joinedload(Sales.payment),
+            joinedload(Sales.purchased_features)
+        ).filter(
+            Sales.user_id == user_id
+        ).order_by(Sales.creation_date.desc())
+
+        total_pages = sales_query.count() // per_page + (1 if sales_query.count() % per_page > 0 else 0)
+
+        sales_pagination = sales_query.paginate(page=page, per_page=per_page, error_out=False)
+        sales = sales_pagination.items
+        
+        # Construir lista de compras
+        purchases = []
+        
+        for sale in sales:
+            # Determinar moneda basada en BsDexchangeRate
+            currency = "BsD" if sale.BsDexchangeRate else "USD"
+            
+            # Mapear status
+            status_map = {
+                'decontado': 'paid',
+                'reserva': 'reserved',
+                'por cuotas': 'installments',
+                'cancelado': 'cancelled'
+            }
+            status = status_map.get(sale.status, sale.status)
+            
+            # Obtener método de pago de la tabla Payments si existe
+            payment_method = ""
+            if sale.payment:
+                payment_method = sale.payment.wallet or sale.payment.PaymentMethod or ""
+            
+            # Construir lista de tickets
+            tickets_list = []
+            features = []
+            for ticket in sale.tickets:
+                ticket_data = {
+                    'ticket_id': str(ticket.ticket_id),
+                    'section': ticket.seat.section.name.replace('20_', ' ') if ticket.seat and ticket.seat.section else '',
+                    'row': ticket.seat.row or '' if ticket.seat else '',
+                    'number': str(ticket.seat.number) if ticket.seat and ticket.seat.number else '',
+                    'price': round(ticket.price/100, 2) if ticket.price is not None else 0.0,
+                    'qr_link': ticket.QRlink or ''
+                }
+                tickets_list.append(ticket_data)
+
+            if sale.purchased_features:
+                for feature in sale.purchased_features:
+                    feature_data = {
+                        'FeatureName': feature.feature.FeatureName,
+                        'FeatureCategory': feature.feature.FeatureCategory,
+                        'FeatureDescription': feature.feature.FeatureDescription,
+                        'PurchaseAmount': round(feature.PurchaseAmount/100, 2) if feature.PurchaseAmount is not None else 0.0,
+                        'Quantity': feature.Quantity,
+                    }
+                    features.append(feature_data)
+                
+            
+            # Construir objeto de compra
+            purchase = {
+                'sale_id': str(sale.sale_id),
+                'event_name': sale.event_rel.name if sale.event_rel else '',
+                'event_place': sale.event_rel.venue.name if sale.event_rel and sale.event_rel.venue else '',
+                'event_date': sale.event_rel.date_string if sale.event_rel else '',
+                'event_hour': sale.event_rel.hour_string if sale.event_rel else '',
+                'purchase_date': sale.creation_date.strftime('%Y-%m-%d') if sale.creation_date else '',
+                'status': status,
+                'total_price': round(sale.paid/100, 2) if sale.paid is not None else 0.0,
+                'currency': currency,
+                'payment_method': payment_method,
+                'tickets': tickets_list,
+                'features': features,
+                'discount': round(sale.discount/100, 2) if sale.discount is not None else 0.0,
+                'fees': round(sale.fee/100, 2) if sale.fee is not None else 0.0,
+            }
+            
+            purchases.append(purchase)
+        
+        return jsonify({
+            'status': 'ok',
+            'purchases': purchases,
+            'total_pages': total_pages,
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error obteniendo historial de compras: {e}")
+        return jsonify({'status': 'error', 'message': 'Ocurrió un error al obtener el historial de compras'}), 500
+
+    

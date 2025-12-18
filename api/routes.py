@@ -175,7 +175,7 @@ def google_auth():
     # Suponiendo que tienes una función para manejar la creación de tokens de sesión:
     access_token = create_access_token(
         identity=str(user_id), 
-        additional_claims={'role': 'customer', 'username': user_email, 'status': 'verified', 'id': user_id}
+        additional_claims={'role': role, 'username': user_email, 'status': 'verified', 'id': user_id}
     )
     
     # Lógica para crear el Active_token (similar a tu login)
