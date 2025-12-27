@@ -87,7 +87,8 @@ def get_map():
                 Event.active,
                 Event.SVGmap,
                 Event.date_string,
-                Event.hour_string
+                Event.hour_string,
+                Event.type_of_event
             ),
             joinedload(Event.venue).load_only(
                 Venue.venue_id,
@@ -254,6 +255,7 @@ def get_map():
             "clasification": event.clasification if hasattr(event, 'clasification') else None,
             "age_restriction": event.age_restriction if hasattr(event, 'age_restriction') else None,
             "mainImage": event.mainImage if hasattr(event, 'mainImage') else None,
+            "type_of_event": event.type_of_event if hasattr(event, 'type_of_event') else None,
         }
 
         # ---------------------------------------------------------------
