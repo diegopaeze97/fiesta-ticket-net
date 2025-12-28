@@ -839,19 +839,12 @@ def get_paymentdetails():
         number_json = None
             
         if customer.PhoneNumber:
-            customer_phone = customer.PhoneNumber 
-            customer_phone = customer_phone.replace("+", "").replace(" ", "").replace("-", "")
-            # Busca: 1–3 dígitos país, 3 dígitos prefijo, 7 dígitos número
-            m = re.match(r'^(\d{1,3})(\d{10})$', customer_phone)
-            if m:
-                sufix = m.group(1)
-                fullnumber = m.group(2)
-                number_json = {
-                    "country_code": sufix,
-                    "number": fullnumber
-                }
-            else:
-                number_json = None
+            number_json = {
+                "country_code": customer.CountryCode,
+                "number": customer.PhoneNumber
+            }
+        else:
+            number_json = None
 
         additional_features = event_details.additional_features if hasattr(event_details, 'additional_features') else None
 

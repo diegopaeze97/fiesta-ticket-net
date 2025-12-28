@@ -123,12 +123,11 @@ def register():
     password = request.json.get("password").strip()
     confirm_password = request.json.get("confirmPassword").strip()
     phone = request.json.get("phone").strip()
+    countryCode = bleach.clean(request.json.get("countryCode", ""), strip=True)
     email = bleach.clean(request.json.get("email", "").strip().lower(), strip=True)
     birthday = request.json.get("Birthdate")
     role = request.json.get("role")
     eventAccess = request.json.get("eventAccess", [])  # Lista de IDs de eventos para acceso especial
-
-    print("Event Access Received:", eventAccess)
 
     # Validación de datos de entrada
     if not (firstname and lastname and password and confirm_password and phone and email and birthday and gender and role):
@@ -139,6 +138,9 @@ def register():
     
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
+
+    if not utils.country_code_pattern.match(countryCode):
+        return jsonify(message='Código de país no válido.'), 400
     
     if not signup_utils.system_strong_password_pattern.match(password):
         return jsonify(message='La contraseña no es lo suficientemente segura. Debe contener al menos una letra mayúscula, una minúscula, un número y un carácter especial, y tener una longitud mínima de 8 caracteres.'), 400
@@ -191,7 +193,8 @@ def register():
                 status='unverified',
                 role=role,
                 Joindate=today,
-                Gender=gender
+                Gender=gender,
+                CountryCode=countryCode
             )
             db.session.add(user)
             db.session.flush()  # Para obtener el CustomerID antes del commit
@@ -248,6 +251,7 @@ def edit_user_info():
     password = request.json.get("password").strip()
     confirm_password = request.json.get("confirmPassword").strip()
     phone = request.json.get("phone").strip()
+    countryCode = bleach.clean(request.json.get("countryCode", ""), strip=True)
     email = bleach.clean(request.json.get("email", "").strip().lower(), strip=True)
     birthday = request.json.get("Birthdate")
     role = request.json.get("role")
@@ -262,7 +266,10 @@ def edit_user_info():
     
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
-    
+
+    if not utils.country_code_pattern.match(countryCode):
+        return jsonify(message='Código de país no válido.'), 400
+
     if gender not in ['Male', 'Female']:
         return jsonify(message='Selección de género no válida.'), 400
     
@@ -329,6 +336,7 @@ def edit_user_info():
         user.FirstName = firstname
         user.LastName = lastname
         user.PhoneNumber = phone
+        user.CountryCode = countryCode
         user.birthday = birthday
         user.Gender = gender
         user.role = role
@@ -336,7 +344,6 @@ def edit_user_info():
         if modify_eventAccess and role == 'provider':
             eventAccess = request.json.get("eventAccess", [])  # Lista de IDs de eventos para acceso especial
             event_access_ids = [int(event_id) for event_id in eventAccess if isinstance(event_id, int) or (isinstance(event_id, str) and event_id.isdigit())]
-            print("Event Access IDs:", event_access_ids)
             
             # Primero, eliminamos las asociaciones existentes
             db.session.query(EventUserAccess).filter(EventUserAccess.user_id == user.CustomerID).delete()
@@ -2624,14 +2631,15 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 2️⃣ Validar información del pago
     # ----------------------------------------------------------------
-    full_phone_number = None
 
     if not all([contact_phone, contact_phone_prefix]):
         return jsonify({"message": "Complete todos los campos requeridos"}), 400
 
-    full_phone_number = f"{contact_phone_prefix}{contact_phone}".replace("+", "").replace(" ", "").replace("-", "")
-    if not utils.phone_pattern.match(full_phone_number):
+    if not utils.phone_pattern.match(contact_phone):
         return jsonify({"message": "Número de teléfono no válido"}), 400
+
+    if not utils.country_code_pattern.match(contact_phone_prefix):
+        return jsonify({"message": "Código de país no válido"}), 400
 
     payment_status = "pagado por verificar"
 
@@ -2651,7 +2659,8 @@ def block_tickets():
             status='unverified',
             CreatedBy=user_id,
             Identification=cedula,
-            PhoneNumber=full_phone_number,
+            PhoneNumber=contact_phone,
+            CountryCode=contact_phone_prefix,
             Address=address
         )
         db.session.add(customer)
@@ -2807,7 +2816,7 @@ def block_tickets():
             StatusFinanciamiento='decontado',
             event=event.event_id,
             fee=total_fee,
-            ContactPhoneNumber=full_phone_number,
+            ContactPhoneNumber=contact_phone,
             creation_date=date,
             discount=total_discount,
             discount_ref=discount_id
@@ -2915,7 +2924,7 @@ def block_tickets():
         # ---------------------------------------------------------------
         # Notificar a administración sobre nueva venta/pago por whatsapp
         # ---------------------------------------------------------------
-        WA_utils.send_new_sale_notification(current_app.config, customer, selectedSeats, sale_data, full_phone_number)
+        WA_utils.send_new_sale_notification(current_app.config, customer, selectedSeats, sale_data, contact_phone)
         # ---------------------------------------------------------------
 
         return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "ok"}), 200
@@ -4750,6 +4759,7 @@ def load_users():
                 'date': user.birthday,
                 'gender': user.Gender,
                 'joindate': user.Joindate,
+                'country_code': user.CountryCode,
             }
 
             if (user.role or '').lower() == 'provider':

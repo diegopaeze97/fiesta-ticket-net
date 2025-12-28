@@ -33,15 +33,19 @@ def register():
     password = request.json.get("signupPassword").strip()
     confirm_password = request.json.get("signupPasswordRepeat").strip()
     phone = request.json.get("signupTelefono").strip()
+    countryCode = bleach.clean(request.json.get("signupCodigoPais", ""), strip=True)
     email = bleach.clean(request.json.get("signupEmail", "").strip().lower(), strip=True)
 
     # Validación de datos de entrada
-    if not (firstname and lastname and password and confirm_password and phone and email and cedula):
+    if not (firstname and lastname and password and confirm_password and phone and email and cedula and countryCode):
         return jsonify(message='Faltan datos requeridos.'), 400
     
     if not utils.email_pattern.match(email):
         return jsonify(message='Dirección de correo electrónico no válida.'), 400
-    
+
+    if not utils.country_code_pattern.match(countryCode):
+        return jsonify(message='Código de país no válido.'), 400
+
     if not utils.phone_pattern.match(phone):
         return jsonify(message='Número de teléfono no válido. Debe estar en formato E.164.'), 400
     
@@ -73,6 +77,7 @@ def register():
             correo_unverified.Email = email
             correo_unverified.FirstName = firstname
             correo_unverified.LastName = lastname
+            correo_unverified.CountryCode = countryCode
             correo_unverified.PhoneNumber = phone
             correo_unverified.Identification = cedula.upper()
             correo_unverified.Password = hashed_password
@@ -108,6 +113,7 @@ def register():
                 FirstName=firstname,
                 LastName=lastname,
                 PhoneNumber=phone,
+                CountryCode=countryCode,
                 status='unverified',
                 role='customer',
                 strikes=0,
