@@ -929,7 +929,7 @@ def block_tickets():
     if not all([user_id, payment_method, tickera_id, tickera_api_key, event_id]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
-    if payment_method not in ["pagomovil", "efectivo", "zelle"]:
+    if payment_method not in ["pagomovil", "efectivo", "zelle", "cashea"]:
         return jsonify({"message": "Método de pago no válido"}), 400
 
     # ----------------------------------------------------------------
