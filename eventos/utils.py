@@ -531,8 +531,8 @@ def get_exchange_rate_bsd():
         if response_exchange.status_code != 200:
             logging.error(response_exchange.status_code)
             #temporalmente mientras se arregla cloudFlare
-            #return {"exchangeRate": 23684}
-            return {"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}, 500
+            return {"exchangeRate": 35892}
+            #return {"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}, 500
         exchange_data = response_exchange.json()
         exchangeRate = exchange_data.get("current", {}).get("usd", 0)
 
