@@ -2613,7 +2613,7 @@ def block_tickets():
     if not all([user_id, payment_method, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
-    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos"]:
+    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos", "cashea"]:
         return jsonify({"message": "Método de pago no válido"}), 400
     
     if len(selectedSeats) == 0:
