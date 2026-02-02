@@ -88,6 +88,9 @@ def createApp():
     #aws s3
     app.config['S3_BUCKET'] = os.getenv('S3_BUCKET')
 
+    # api tasa de cambio bsd
+    app.config['X_DOLARVZLA_KEY'] = os.getenv('x-dolarvzla-key')
+
     db.init_app(app)
     jwt.init_app(app)
     socketio.init_app(app)
