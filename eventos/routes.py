@@ -194,6 +194,10 @@ def get_map():
                     "expires_at": t.expires_at.isoformat() if t.expires_at else None,
                     "currency": currency
                 })  
+
+                if 'meet' in t.seat.section.name:
+                    # los eventos meet and greet siempre son boletos bloqueados
+                    print(t.seat.section.name)
         
 
         
