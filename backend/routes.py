@@ -3743,25 +3743,24 @@ def refund():
         user_id = get_jwt().get("id")
 
         # Extraer datos del formulario (mismos parámetros que approve-abono en rama de rechazo)
-        payment_id = request.json.get('payment_id')
-        received = request.json.get('received', 0) * 100  # Convertir a centavos
+        sale_id = request.json.get('sale_id')
+        refunded = request.json.get('received', 0) * 100  # Convertir a centavos
+        refunded_fee = request.json.get('refunded_fee', False)
         PaymentMethod = request.json.get('PaymentMethod', 'N/A')
+        PaymentDate = request.json.get('PaymentDate', 'N/A')
+        PaymentReference = request.json.get('PaymentReference', 'N/A')
 
-        if not payment_id:
-            return jsonify({'message': 'Falta el payment_id', 'status': 'error'}), 400
+        if not sale_id:
+            return jsonify({'message': 'Falta el id de la venta', 'status': 'error'}), 400
 
-        # Buscar el pago por su ID
-        payment = Payments.query.options(
-            joinedload(Payments.sale).joinedload(Sales.customer),
-            joinedload(Payments.sale).joinedload(Sales.event_rel)
+        # Buscar la venta por su ID
+        sale = Sales.query.options(
+            joinedload(Sales.customer),
+            joinedload(Sales.event_rel)
         ).filter(
-            Payments.PaymentID == int(payment_id)
+            Sales.sale_id == int(sale_id)
         ).one_or_none()
 
-        if not payment:
-            return jsonify({'message': 'No se encontró el pago asociado', 'status': 'error'}), 400
-
-        sale = payment.sale
         if not sale:
             return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 400
 
@@ -3815,8 +3814,24 @@ def refund():
             ticket.QRlink = ''
             ticket.availability_status = ''
 
-        # Marcar la venta como cancelada
-        sale.status = 'cancelado'
+        # Marcar la venta como reembolsado
+        sale.status = 'reembolsado'
+        sale.paid = 0
+        sale.StatusFinanciamiento = 'reembolsado'
+
+        #creamos el registro de pago de reembolso
+        new_payment_entry = Payments(
+            SaleID=sale.sale_id,
+            Amount= -int(refunded),
+            PaymentMethod=PaymentMethod,
+            PaymentDate=datetime.strptime(PaymentDate, "%d/%m/%Y").date() if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', PaymentDate) else PaymentDate,
+            Reference=PaymentReference,
+            Status='reembolsado',
+            CreatedBy=user_id,
+            ApprovedBy=user_id,
+            ApprovalDate=datetime.now() 
+        )
+        db.session.add(new_payment_entry)
 
         # Si el evento es de API, liberar los tickets en Tickera
         if event and event.from_api and tickets_to_release:
@@ -3871,12 +3886,39 @@ def refund():
             'price': round(sale.price / 100, 2),
             'fee': round(sale.fee / 100, 2),
             'discount': round(sale.discount / 100, 2),
-            'total_abono': round(received / 100, 2),
+            'total_abono': round(refunded / 100, 2),
             'payment_method': PaymentMethod,
             'link_reserva': qr_link,
             'localizador': sale.saleLocator,
             'status': 'reembolsado'
         }
+
+        try:
+        # Actualizar métricas del evento
+        # NOTA: Solo se incrementan las métricas cuando la venta se completa por primera vez
+        # gross_sales debe ser el precio total de la venta (sale.price), no el monto parcial recibido
+            stmt = (
+                update(Event)
+                .where(Event.event_id == int(event.event_id))
+                .values(
+                    total_sales = func.coalesce(Event.total_sales, 0) - 1,
+                    gross_sales = func.coalesce(Event.gross_sales, 0) - refunded,
+                    total_discounts = func.coalesce(Event.total_discounts, 0) - func.coalesce(sale.discount, 0),
+                    total_fees  = (func.coalesce(Event.total_fees, 0) - func.coalesce(sale.fee, 0)) if refunded_fee else func.coalesce(Event.total_fees, 0),
+                    total_discounts_tickera = (
+                        func.coalesce(Event.total_discounts_tickera, 0)
+                        - (func.coalesce(Event.Fee, 0) * func.coalesce(sale.discount, 0) / 100)
+                    ) if refunded_fee else func.coalesce(Event.total_discounts_tickera, 0)
+                )
+                .returning(Event.event_id)  # opcional, útil para confirmar
+            )
+            db.session.execute(stmt)
+
+        except Exception as e:
+            # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+            logging.error(f"Error al actualizar métricas del evento: {e}")
+            db.session.rollback() 
+            return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
         # Enviar notificación al usuario
         if customer:
