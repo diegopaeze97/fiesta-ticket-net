@@ -11,6 +11,7 @@ from stripewebhook.routes import stripewebhook
 from providers.routes import providers
 from api.routes import api
 from vol_api.testing import vol
+from sellers.routes import sellers
 from extensions import jwt, db, socketio, mail # para importar flask_jwt_extended, db, jwt, SQLAlchemy
 from models import Revoked_tokens
 from flask_cors import CORS
@@ -164,5 +165,6 @@ def createApp():
     app.register_blueprint(stripewebhook, url_prefix='/stripewebhook')
     app.register_blueprint(api, url_prefix='/api')
     app.register_blueprint(vol, url_prefix='/vol')
+    app.register_blueprint(sellers, url_prefix='/sellers')
 
     return app

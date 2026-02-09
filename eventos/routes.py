@@ -194,12 +194,6 @@ def get_map():
                     "expires_at": t.expires_at.isoformat() if t.expires_at else None,
                     "currency": currency
                 })  
-
-                if 'meet' in t.seat.section.name:
-                    # los eventos meet and greet siempre son boletos bloqueados
-                    print(t.seat.section.name)
-        
-
         
 
         now = datetime.now(timezone.utc)  # Siempre en UTC
@@ -333,7 +327,7 @@ def get_events():
         return jsonify({"message": "Error al obtener eventos", "status": "error"}), 500
     
 @events.route('/buy-tickets', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def buy_tickets():
     try:
         # ---------------------------------------------------------------
@@ -739,7 +733,7 @@ def buy_tickets():
         db.session.close()
 
 @events.route('/get-paymentdetails', methods=['GET'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def get_paymentdetails():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')
@@ -907,7 +901,7 @@ def get_paymentdetails():
         db.session.close()
 
 @events.route('/block-tickets', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def block_tickets():
     user_id = get_jwt().get("id")
     data = request.get_json()
@@ -1673,7 +1667,7 @@ def canjear_ticket():
 
 
 @events.route("/create-stripe-checkout-session", methods=["POST"])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def create_stripe_checkout_session():
     user_id = get_jwt().get("id")
     event_id = request.args.get('query', '')
@@ -1785,7 +1779,7 @@ def create_stripe_checkout_session():
         db.session.close()
     
 @events.route('/get-debitoinmediato-code', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def get_debitoinmediato_code():
     user_id = get_jwt().get("id")
     data = request.get_json()
@@ -1939,7 +1933,7 @@ def get_debitoinmediato_code():
         db.session.close()
 
 @events.route('/validate-c2p', methods=['POST'])
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def validate_c2p():
     """
     Endpoint para validar transacciones de PagoMóvil C2P en tiempo real.

@@ -110,6 +110,7 @@ class Event(db.Model):
     event_id_provider = Column(Integer) # ID del evento en el proveedor externo (Tickera) #solo si aplica (API)
     event_provider = Column(Integer, ForeignKey('providers.ProviderID'), nullable=True) # Proveedor externo (Tickera u otro)
     Fee = Column(Integer) # Tarifa del evento
+    seller_fee = Column(Integer) # Tarifa del vendedor
     total_sales = Column(Integer, default=0) # Ventas netas del evento
     gross_sales = Column(Integer, default=0) # Ventas brutas del evento
     total_fees = Column(Integer, default=0) # Total de fees cobrados en el evento
@@ -294,6 +295,8 @@ class Sales(db.Model):
     liquidado = Column(Boolean, default=False)  # Indica si la venta ha sido liquidada a la productora
     liquidation_id = Column(Integer, ForeignKey('liquidations.LiquidationID'))  # ID de liquidación si aplica
     discount_ref = Column(Integer, ForeignKey('discounts.DiscountID'), nullable=True)  # referencia al descuento aplicado
+    seller_commission = Column(Boolean, default=False)  # si hay comisión del vendedor para esta venta
+    
 
     # Relaciones
     customer = relationship('EventsUsers', backref='sales')
@@ -305,7 +308,50 @@ class Sales(db.Model):
     discount_rel = relationship('Discounts', back_populates='sales')
     # Additional features relationship
     purchased_features = relationship('PurchasedFeatures', back_populates='sale')
+    seller_commission_rel = relationship('SellerCommissions', back_populates='sale', uselist=False)
 
+class SellerCommissions(db.Model):
+    __tablename__ = 'seller_commissions'
+
+    CommissionID = Column(Integer, primary_key=True)
+    SaleID = Column(Integer, ForeignKey('sales.sale_id'), nullable=False)
+    SellerID = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=False)
+    CommissionAmount = Column(Integer, nullable=False)
+    PaidOut = Column(Boolean, default=False)  # Indica si la comisión ha sido pagada al vendedor
+    PaymentDate = Column(DateTime)
+    PaymentID = Column(Integer, ForeignKey('seller_commission_payments.PaymentID'), nullable=True)  # referencia al pago de la comisión, si ya fue pagada
+
+    # Relaciones
+    sale = relationship('Sales', back_populates='seller_commission_rel')
+    seller = relationship('EventsUsers', backref='seller_commissions')
+    linked_payment = relationship('SellerCommissionPayments', backref='seller_commissions_linked_payment')
+
+class SellerCommissionPayments(db.Model):
+    __tablename__ = 'seller_commission_payments'
+
+    PaymentID = Column(Integer, primary_key=True)
+    SellerID = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=False)
+    PaymentMethod = Column(String, nullable=False)  # 'bank_transfer', 'paypal', etc.
+    Reference = Column(String)  # referencia de pago
+    PaymentDate = Column(DateTime, nullable=False, default=db.func.current_date())
+    Currency = Column(String, nullable=False, default='USD')  # moneda del pago
+    AmountBS = Column(Integer)  # monto en bolívares, si el pago se hizo en esa moneda
+    AddiitionalCharges = Column(String)  # cargos adicionales, si aplican, separados por ||
+    Discounts = Column(String)  # descuentos aplicados, si aplican, separados por ||
+    Comments = Column(String)  # comentarios adicionales sobre el pago
+    TotalComission = Column(Integer)  # monto total de comisiones que se están pagando en este registro, para facilitar conciliación
+    TotalCharges = Column(Integer)  # monto total de cargos adicionales, para facilitar conciliación
+    TotalDiscounts = Column(Integer)  # monto total de descuentos aplicados, para facilitar conciliación
+    FinalAmount = Column(Integer)  # monto final pagado al vendedor después de aplicar cargos y descuentos
+    ApprovedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True) #quien aprobo el pago
+    CreatedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True) #quien creo el registro del pago
+    ApprovalDate = Column(Date)
+
+    # Relaciones
+    approvedby = relationship('EventsUsers', foreign_keys=[ApprovedBy], backref='approved_seller_payments')
+    createdby = relationship('EventsUsers', foreign_keys=[CreatedBy], backref='created_seller_payments')
+    seller = relationship('EventsUsers', foreign_keys=[SellerID], backref='seller_payments')
+    linked_commissions = relationship('SellerCommissions', backref='seller_commission_payments_linked_commissions')
 
 
 class Logs(db.Model):
