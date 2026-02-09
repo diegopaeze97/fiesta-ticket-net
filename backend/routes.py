@@ -2,7 +2,7 @@ from flask import request, jsonify, Blueprint, make_response, session, current_a
 from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import  check_password_hash, generate_password_hash
 from extensions import db, s3
-from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess, AdditionalFeatures, PurchasedFeatures
+from models import EventsUsers, Revoked_tokens, Event, Venue, Section, Seat, Ticket, Liquidations, Sales, Logs, Payments, Active_tokens, Discounts, Providers, EventUserAccess, AdditionalFeatures, PurchasedFeatures, SellerCommissions
 from flask_jwt_extended import get_jwt, get_jti
 from flask_mail import Message
 import logging
@@ -996,8 +996,10 @@ def load_events():
         return jsonify({'message': 'Error al cargar eventos', 'status': 'error', 'detail': str(e)}), 500
     
 @backend.route('/load-sales', methods=['GET']) #ver ventas en general
-@roles_required(allowed_roles=["admin", "tiquetero"])
+@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def load_sales():
+    #extraemos el rol del usuario para filtrar por vendedor si es necesario
+    user_role = get_jwt().get("role")
     try:
 
         from_date_str = request.args.get('from_date', '')
@@ -1102,6 +1104,9 @@ def load_sales():
             filters_stats.append(Sales.event.in_(events))
         if statuses and any(statuses):
             filters.append(Sales.status.in_(statuses))
+
+        if user_role == "seller":
+            filters.append(Sales.created_by == int(get_jwt().get("id")))
 
         if filters:
             query = query.filter(and_(*filters))
@@ -1825,7 +1830,7 @@ Equipo de Fiesta Ticket
 
     
 @backend.route('/load-available-tickets', methods=['GET'])
-@roles_required(allowed_roles=["admin", "tiquetero"])
+@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def load_available_tickets():
     try:
         event_name = request.args.get('event', '')
@@ -1983,6 +1988,7 @@ def load_available_tickets():
                     "ticket_id": t.ticket_id,
                     "status": t.status,
                     "price": t.price,
+                    "svg_id": (t.seat.section.name + '-' + t.seat.row + str(t.seat.number)).lower() if not event.label_inverted else (t.seat.section.name + '-' + str(t.seat.number) + t.seat.row).lower(),
                     "number": t.seat.number,
                     "section": t.seat.section.name.replace('20_', ' ') if t.seat and t.seat.section else '',
                     "row": t.seat.row if t.seat else '',
@@ -2196,7 +2202,7 @@ def load_boleteria():
         return jsonify({"message": "Error interno al cargar boleteria", "status": "error"}), 500
 
 @backend.route('/load-map', methods=['GET'])
-@roles_required(allowed_roles=["admin", "tiquetero"])
+@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def load_map():
     start_time = time.perf_counter()  # ⏱ Inicio total
     try:
@@ -2583,10 +2589,11 @@ def unblock_ticket():
         return jsonify({'message': 'Error al desbloquear ticket', 'status': 'error'}), 500
     
 @backend.route('/block-tickets', methods=['POST'])
-@roles_required(allowed_roles=["admin", "tiquetero"])
+@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def block_tickets():
     user_id = get_jwt().get("id")
     data = request.get_json()
+    role = get_jwt().get("role", "")
 
     payment_method = data.get("PaymentMethod")
     payment_reference = data.get("PaymentReference")
@@ -2613,7 +2620,7 @@ def block_tickets():
     if not all([user_id, payment_method, selectedSeats, payment_reference, email, firstname, lastname, date, contact_phone, contact_phone_prefix, cedula, address]):
         return jsonify({"message": "Faltan parámetros obligatorios"}), 400
 
-    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos"]:
+    if payment_method not in ["pagomovil", "efectivo", "zelle", "binance", "square", "tarjeta de credito", "paypal", "stripe", "pos", "cashea"]:
         return jsonify({"message": "Método de pago no válido"}), 400
     
     if len(selectedSeats) == 0:
@@ -2800,9 +2807,13 @@ def block_tickets():
     # ----------------------------------------------------------------
     # 7️⃣ Aplicar cambios locales (una sola transacción)
     # ----------------------------------------------------------------
+    seller_commission = False
+    if role == 'seller':
+            seller_commission = True 
     try:
         total_price = sum(t.price for t in tickets_en_carrito)
         total_fee = sum(round((event.Fee or 0) * t.price / 100, 2) for t in tickets_en_carrito)
+
         ticket_str_ids = '|'.join(str(t.ticket_id) for t in tickets_en_carrito)
 
         # Crear registro de venta
@@ -2819,7 +2830,8 @@ def block_tickets():
             ContactPhoneNumber=contact_phone,
             creation_date=date,
             discount=total_discount,
-            discount_ref=discount_id
+            discount_ref=discount_id,
+            seller_commission=seller_commission
         )
         db.session.add(sale)
         db.session.flush()
@@ -2937,9 +2949,11 @@ def block_tickets():
         db.session.close()
 
 @backend.route('/customize-reservation', methods=['GET']) #endpoint para recopilar informacion de la reserva (admin)
-@roles_required(allowed_roles=["admin", "tiquetero"])
+@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def customize_reservation():
     sale_id = request.args.get('query', '')
+    # obtenemos el rol del usuario para personalizar la respuesta
+    user_role = get_jwt().get("role")
 
     def format_amount(cents):
         try:
@@ -3021,6 +3035,9 @@ def customize_reservation():
 
         if sale.status == 'cancelado':
             return jsonify({'message': 'Reserva cancelada, por favor contacta a un administrador', 'status': 'ok', 'reservation_status': 'broken'}), 400
+        
+        if user_role in ['seller'] and sale.created_by != get_jwt().get("id"):
+            return jsonify({'message': 'No tienes permiso para ver esta reserva', 'status': 'error'}), 403
 
         payments = Payments.query.filter(Payments.SaleID == sale.sale_id).all()
         payments_list = build_payments_list(payments)
@@ -3581,6 +3598,20 @@ def approve_abono():
                 if not total_price or total_price == 0:
                     return jsonify({'message': 'Error: el precio total de la venta no puede ser cero', 'status': 'error'}), 400
                 
+                discount = payment.sale.discount if payment.sale.discount else 0
+                
+                #verificamos si se deben comisiones al vendedor o afiliado
+                if payment.sale.seller_commission is True:
+                    seller_fee = round((event.seller_fee or 0) * (payment.sale.price - discount) / 100, 2)
+
+                    #creamos la comison en la tabla de comisiones
+                    commission = SellerCommissions(
+                        SaleID=payment.sale.sale_id,
+                        SellerID=payment.sale.created_by,
+                        CommissionAmount=seller_fee,
+                    )
+                    db.session.add(commission)
+                
                 for ticket in tickets_a_emitir:
 
                     if not ticket:
@@ -3645,8 +3676,6 @@ def approve_abono():
                     currency = 'usd'
                 else:
                     currency = 'bsd'
-
-                print(currency)
 
                 sale_data = {
                     'sale_id': str(payment.sale.sale_id),
@@ -3743,25 +3772,24 @@ def refund():
         user_id = get_jwt().get("id")
 
         # Extraer datos del formulario (mismos parámetros que approve-abono en rama de rechazo)
-        payment_id = request.json.get('payment_id')
-        received = request.json.get('received', 0) * 100  # Convertir a centavos
+        sale_id = request.json.get('sale_id')
+        refunded = request.json.get('received', 0) * 100  # Convertir a centavos
+        refunded_fee = request.json.get('refunded_fee', False)
         PaymentMethod = request.json.get('PaymentMethod', 'N/A')
+        PaymentDate = request.json.get('PaymentDate', 'N/A')
+        PaymentReference = request.json.get('PaymentReference', 'N/A')
 
-        if not payment_id:
-            return jsonify({'message': 'Falta el payment_id', 'status': 'error'}), 400
+        if not sale_id:
+            return jsonify({'message': 'Falta el id de la venta', 'status': 'error'}), 400
 
-        # Buscar el pago por su ID
-        payment = Payments.query.options(
-            joinedload(Payments.sale).joinedload(Sales.customer),
-            joinedload(Payments.sale).joinedload(Sales.event_rel)
+        # Buscar la venta por su ID
+        sale = Sales.query.options(
+            joinedload(Sales.customer),
+            joinedload(Sales.event_rel)
         ).filter(
-            Payments.PaymentID == int(payment_id)
+            Sales.sale_id == int(sale_id)
         ).one_or_none()
 
-        if not payment:
-            return jsonify({'message': 'No se encontró el pago asociado', 'status': 'error'}), 400
-
-        sale = payment.sale
         if not sale:
             return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 400
 
@@ -3815,8 +3843,24 @@ def refund():
             ticket.QRlink = ''
             ticket.availability_status = ''
 
-        # Marcar la venta como cancelada
-        sale.status = 'cancelado'
+        # Marcar la venta como reembolsado
+        sale.status = 'reembolsado'
+        sale.paid = 0
+        sale.StatusFinanciamiento = 'reembolsado'
+
+        #creamos el registro de pago de reembolso
+        new_payment_entry = Payments(
+            SaleID=sale.sale_id,
+            Amount= -int(refunded),
+            PaymentMethod=PaymentMethod,
+            PaymentDate=datetime.strptime(PaymentDate, "%d/%m/%Y").date() if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', PaymentDate) else PaymentDate,
+            Reference=PaymentReference,
+            Status='reembolsado',
+            CreatedBy=user_id,
+            ApprovedBy=user_id,
+            ApprovalDate=datetime.now() 
+        )
+        db.session.add(new_payment_entry)
 
         # Si el evento es de API, liberar los tickets en Tickera
         if event and event.from_api and tickets_to_release:
@@ -3871,12 +3915,39 @@ def refund():
             'price': round(sale.price / 100, 2),
             'fee': round(sale.fee / 100, 2),
             'discount': round(sale.discount / 100, 2),
-            'total_abono': round(received / 100, 2),
+            'total_abono': round(refunded / 100, 2),
             'payment_method': PaymentMethod,
             'link_reserva': qr_link,
             'localizador': sale.saleLocator,
             'status': 'reembolsado'
         }
+
+        try:
+        # Actualizar métricas del evento
+        # NOTA: Solo se incrementan las métricas cuando la venta se completa por primera vez
+        # gross_sales debe ser el precio total de la venta (sale.price), no el monto parcial recibido
+            stmt = (
+                update(Event)
+                .where(Event.event_id == int(event.event_id))
+                .values(
+                    total_sales = func.coalesce(Event.total_sales, 0) - 1,
+                    gross_sales = func.coalesce(Event.gross_sales, 0) - refunded,
+                    total_discounts = func.coalesce(Event.total_discounts, 0) - func.coalesce(sale.discount, 0),
+                    total_fees  = (func.coalesce(Event.total_fees, 0) - func.coalesce(sale.fee, 0)) if refunded_fee else func.coalesce(Event.total_fees, 0),
+                    total_discounts_tickera = (
+                        func.coalesce(Event.total_discounts_tickera, 0)
+                        - (func.coalesce(Event.Fee, 0) * func.coalesce(sale.discount, 0) / 100)
+                    ) if refunded_fee else func.coalesce(Event.total_discounts_tickera, 0)
+                )
+                .returning(Event.event_id)  # opcional, útil para confirmar
+            )
+            db.session.execute(stmt)
+
+        except Exception as e:
+            # En caso de cualquier error (ej. la tabla fue bloqueada brevemente)
+            logging.error(f"Error al actualizar métricas del evento: {e}")
+            db.session.rollback() 
+            return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
         # Enviar notificación al usuario
         if customer:

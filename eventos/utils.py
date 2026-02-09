@@ -1,4 +1,4 @@
-from flask import render_template, jsonify
+from flask import render_template, jsonify, current_app
 import requests
 import os
 import qrcode
@@ -523,20 +523,38 @@ def validate_discount_code(discount_code, customer, event_details, tickets_en_ca
 
 def get_exchange_rate_bsd():
     exchangeRate = 0
+    
     try:
-        url_exchange_rate_BsD = f"https://api.dolarvzla.com/public/exchange-rate"
+        url_exchange_rate_BsD_main = f"https://ve.dolarapi.com/v1/dolares/oficial"
+        url_exchange_rate_BsD_backup = f"https://api.dolarvzla.com/public/exchange-rate"
+        response_exchange = requests.get(url_exchange_rate_BsD_main, timeout=20)
 
-        response_exchange = requests.get(url_exchange_rate_BsD, timeout=20)
 
         if response_exchange.status_code != 200:
             logging.error(response_exchange.status_code)
-            #temporalmente mientras se arregla cloudFlare
-            #return {"exchangeRate": 23684}
-            return {"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}, 500
-        exchange_data = response_exchange.json()
-        exchangeRate = exchange_data.get("current", {}).get("usd", 0)
+            logging.error("Falling back to backup exchange rate URL")
+            # Intentar con la URL de respaldo
+            headers = {
+            "x-dolarvzla-key": current_app.config['X_DOLARVZLA_KEY']
+            }
 
-        if exchangeRate <= 200.00: #minimo aceptable al 18 octubre 2025
+            response_exchange_backup = requests.get(url_exchange_rate_BsD_backup, headers=headers, timeout=20)
+            response_exchange = response_exchange_backup
+        if response_exchange.status_code != 200:
+            return {"message": "No se pudo obtener la tasa de cambio. Por favor, inténtelo de nuevo más tarde."}, 500
+        
+        exchange_data = response_exchange.json()
+
+        # main y backup tienen estructuras diferentes
+        if "promedio" in exchange_data:
+            logging.info("Using main exchange rate data structure")
+            exchangeRate = float(exchange_data.get("promedio", 0))
+
+        else:
+            logging.info("Using backup exchange rate data structure")
+            exchangeRate = float(exchange_data.get("current", {}).get("usd", 0))
+
+        if exchangeRate <= 350.00: #minimo aceptable al 02 feb 2026
             return {"message": "Tasa de cambio inválida. Por favor, inténtelo de nuevo más tarde."}, 500
         
         exchangeRate = int(exchangeRate*100)
