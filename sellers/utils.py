@@ -29,14 +29,14 @@ def generate_seller_liquidation_pdf(payment, seller, sales_data, totals, additio
 
         def format_currency_cents_to_dollars(value, symbol="$", decimals=2):
             try:
-                v = float(value / 100 or 0)
+                v = float((value or 0) / 100)
             except Exception:
-                return str(value / 100)
+                return str((value or 0) / 100)
             return f"{symbol}{v:,.{decimals}f}"
 
         # Registrar filtros en Jinja
         current_app.jinja_env.filters['currency'] = format_currency
-        current_app.jinja_env.filters['currency_Bsd'] = format_currency_bsd
+        current_app.jinja_env.filters['currency_bsd'] = format_currency_bsd
         current_app.jinja_env.filters['currency_cents_to_dollars'] = format_currency_cents_to_dollars
 
         # Renderizar HTML

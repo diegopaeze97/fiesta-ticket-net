@@ -396,17 +396,23 @@ def admin_sellers_liquidate():
 
         # Preparar datos de ventas para el PDF
         sales_data = []
+        # Create a dictionary mapping SaleID to commission amounts for O(1) lookup
+        commission_by_sale = {}
+        for c in commissions:
+            commission_by_sale.setdefault(c.SaleID, 0)
+            commission_by_sale[c.SaleID] += (c.CommissionAmount or 0)
+        
         for sale in sales:
-            # Calcular comisión total para esta venta
-            sale_commission = sum((c.CommissionAmount or 0) for c in commissions if c.SaleID == sale.sale_id)
+            # Get commission for this sale from pre-computed dictionary
+            sale_commission = commission_by_sale.get(sale.sale_id, 0)
             
             sales_data.append({
                 "sale_id": sale.sale_id,
                 "sale_date": sale.creation_date,
                 "event_name": sale.event_rel.name if sale.event_rel else "N/A",
                 "ticket_count": len(sale.tickets),
-                "sale_amount": (sale.price or 0) - (sale.discount or 0) + (sale.fee or 0),
-                "commission_amount": sale_commission
+                "sale_amount": (sale.price or 0) - (sale.discount or 0) + (sale.fee or 0),  # Already in cents
+                "commission_amount": sale_commission  # Already in cents
             })
 
         # Preparar datos de totales para el PDF
