@@ -1,5 +1,5 @@
-from flask import request, jsonify, Blueprint
-from extensions import db
+from flask import request, jsonify, Blueprint, current_app
+from extensions import db, s3
 from flask_jwt_extended import get_jwt
 import logging
 from sqlalchemy.orm import joinedload, load_only
@@ -7,6 +7,7 @@ from sqlalchemy import func
 from models import Sales, Ticket, Seat, Event, SellerCommissions, EventsUsers, SellerCommissionPayments
 from decorators.utils import roles_required
 from datetime import datetime, timezone
+import sellers.utils as seller_utils
 
 sellers = Blueprint('sellers', __name__)
 
@@ -371,13 +372,141 @@ def admin_sellers_liquidate():
                     pass
             updated += 1
 
-        # Commit final
+        # Commit DB antes de generar PDF (necesitamos el PaymentID)
         db.session.commit()
+
+        # -------------------------
+        # Obtener información del vendedor y ventas para el PDF
+        # -------------------------
+        seller = EventsUsers.query.filter_by(CustomerID=int(seller_id)).first()
+        if not seller:
+            logging.error(f"No se encontró el vendedor con ID {seller_id}")
+            return jsonify({
+                "status": "ok",
+                "updated": updated,
+                "payment_id": new_payment.PaymentID,
+                "warning": "Liquidación creada pero no se pudo generar PDF (vendedor no encontrado)"
+            }), 200
+
+        # Obtener ventas con información completa para el PDF
+        sales = Sales.query.options(
+            joinedload(Sales.tickets),
+            joinedload(Sales.event_rel).load_only(Event.event_id, Event.name)
+        ).filter(Sales.sale_id.in_(sale_ids_int)).all()
+
+        # Preparar datos de ventas para el PDF
+        sales_data = []
+        for sale in sales:
+            # Calcular comisión total para esta venta
+            sale_commission = sum((c.CommissionAmount or 0) for c in commissions if c.SaleID == sale.sale_id)
+            
+            sales_data.append({
+                "sale_id": sale.sale_id,
+                "sale_date": sale.creation_date,
+                "event_name": sale.event_rel.name if sale.event_rel else "N/A",
+                "ticket_count": len(sale.tickets),
+                "sale_amount": (sale.price or 0) - (sale.discount or 0) + (sale.fee or 0),
+                "commission_amount": sale_commission
+            })
+
+        # Preparar datos de totales para el PDF
+        totals_pdf = {
+            "totalCommission": total_commission_cents / 100,
+            "totalCharges": total_charges_cents / 100,
+            "totalDiscounts": total_discounts_cents / 100,
+            "finalAmount": final_amount_cents / 100
+        }
+
+        # Parsear cargos adicionales y descuentos para el PDF
+        charges_list = []
+        if additional_charges:
+            for charge in additional_charges:
+                charges_list.append({
+                    "name": charge.get("name", ""),
+                    "amount": charge.get("price", 0) or charge.get("amount", 0)
+                })
+
+        discounts_list = []
+        if discounts:
+            for discount in discounts:
+                discounts_list.append({
+                    "name": discount.get("name", ""),
+                    "amount": discount.get("price", 0) or discount.get("amount", 0)
+                })
+
+        # -------------------------
+        # Generar PDF en memoria
+        # -------------------------
+        pdf_bytes = None
+        try:
+            pdf_bytes = seller_utils.generate_seller_liquidation_pdf(
+                payment=new_payment,
+                seller=seller,
+                sales_data=sales_data,
+                totals=totals_pdf,
+                additional_charges=charges_list,
+                discounts=discounts_list,
+                comments=comments
+            )
+        except Exception as e:
+            logging.exception(f"Error generando PDF de liquidación del vendedor: {e}")
+            # No retornamos error aquí, continuamos sin PDF
+
+        # -------------------------
+        # Subir PDF a S3 y guardar link
+        # -------------------------
+        if pdf_bytes:
+            S3_BUCKET = "imagenes-fiestatravel"
+            s3_key = f"seller_liquidations/{new_payment.PaymentID}.pdf"
+            
+            try:
+                pdf_url = seller_utils.upload_pdf_to_s3_public(s3, S3_BUCKET, s3_key, pdf_bytes)
+                if pdf_url:
+                    # Guardar URL en la base de datos
+                    new_payment.ReceiptLink = pdf_url
+                    db.session.commit()
+                    logging.info(f"PDF de liquidación guardado en S3: {pdf_url}")
+                else:
+                    logging.error("No se pudo subir el PDF a S3")
+            except Exception as e:
+                logging.exception(f"Error subiendo PDF a S3: {e}")
+
+        # -------------------------
+        # Enviar notificaciones por correo
+        # -------------------------
+        if pdf_bytes:
+            try:
+                # Notificar al vendedor
+                seller_utils.send_seller_liquidation_notification(
+                    config=current_app.config,
+                    seller=seller,
+                    payment=new_payment,
+                    pdf_bytes=pdf_bytes,
+                    totals=totals_pdf,
+                    sale_count=len(sales_data)
+                )
+            except Exception as e:
+                logging.exception(f"Error enviando notificación al vendedor: {e}")
+
+            try:
+                # Notificar a los administradores
+                seller_utils.send_admin_liquidation_notification(
+                    config=current_app.config,
+                    seller=seller,
+                    payment=new_payment,
+                    pdf_bytes=pdf_bytes,
+                    totals=totals_pdf,
+                    sale_count=len(sales_data),
+                    sale_ids=sale_ids_int
+                )
+            except Exception as e:
+                logging.exception(f"Error enviando notificación a administradores: {e}")
 
         return jsonify({
             "status": "ok",
             "updated": updated,
-            "payment_id": getattr(new_payment, "PaymentID", None)
+            "payment_id": new_payment.PaymentID,
+            "receipt_link": new_payment.ReceiptLink
         }), 200
 
     except Exception as e:
