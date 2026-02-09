@@ -346,6 +346,7 @@ class SellerCommissionPayments(db.Model):
     ApprovedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True) #quien aprobo el pago
     CreatedBy = Column(Integer, ForeignKey('events_users.CustomerID'), nullable=True) #quien creo el registro del pago
     ApprovalDate = Column(Date)
+    ReceiptLink = Column(String)  # enlace al comprobante de pago, si aplica
 
     # Relaciones
     approvedby = relationship('EventsUsers', foreign_keys=[ApprovedBy], backref='approved_seller_payments')
