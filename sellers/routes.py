@@ -1,5 +1,5 @@
-from flask import request, jsonify, Blueprint
-from extensions import db
+from flask import request, jsonify, Blueprint, current_app
+from extensions import db, s3
 from flask_jwt_extended import get_jwt
 import logging
 from sqlalchemy.orm import joinedload, load_only
@@ -7,6 +7,8 @@ from sqlalchemy import func
 from models import Sales, Ticket, Seat, Event, SellerCommissions, EventsUsers, SellerCommissionPayments
 from decorators.utils import roles_required
 from datetime import datetime, timezone
+import hashlib
+import sellers.utils as seller_utils
 
 sellers = Blueprint('sellers', __name__)
 
@@ -57,77 +59,72 @@ def get_tickets():
         logging.exception(f"Error obteniendo tickets: {e}")
         return jsonify({"message": "Error interno", "status": "error"}), 500
 
-# Nuevo endpoint para dashboard del vendedor
+# Nuevo endpoint para dashboard del vendedor (usando SellerCommissions como fuente principal)
 @sellers.route("/dashboard", methods=["GET"])
 @roles_required(allowed_roles=["seller", "admin", "super_admin"])
 def seller_dashboard():
     user_role = get_jwt().get("role")
     user_id = get_jwt().get("id")
     try:
-        # Solo vendedores (o admin) pueden ver su dashboard. Si admin, puede pasar sellerId en query
+        # Si admin, puede pasar sellerId en query, si no, usa el del JWT
         seller_id = request.args.get("sellerId")
         if user_role == "admin" and seller_id and str(seller_id).isdigit():
             seller_id = int(seller_id)
         else:
             seller_id = int(user_id)
 
-        # Cargar ventas creadas por este vendedor
-        sales_q = Sales.query.options(
-            joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section),
-            joinedload(Sales.payment),
-            joinedload(Sales.event_rel).load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
-            joinedload(Sales.customer).load_only(EventsUsers.CustomerID, EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email),
-            load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.creation_date)
-        ).filter(Sales.created_by == seller_id).order_by(Sales.creation_date.desc())
-
-        sales = sales_q.all()
+        # Extraer todas las comisiones de este vendedor
+        commissions = SellerCommissions.query.options(
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.event_rel)
+                .load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.tickets)
+                .joinedload(Ticket.seat)
+                .joinedload(Seat.section),
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.payment),
+            joinedload(SellerCommissions.linked_payment)
+        ).filter(SellerCommissions.SellerID == seller_id).all()
 
         sales_payload = []
         total_tickets = 0
         total_revenue_cents = 0
+        total_commissions_cents = 0
 
-        # preload commissions for these sales
-        sale_ids = [s.sale_id for s in sales]
-        commissions_map = {}
-        if sale_ids:
-            commissions = SellerCommissions.query.filter(
-                SellerCommissions.SaleID.in_(sale_ids),
-                SellerCommissions.SellerID == seller_id
-            ).all()
-            for c in commissions:
-                commissions_map.setdefault(c.SaleID, 0)
-                commissions_map[c.SaleID] += (c.CommissionAmount or 0)
-
-        for s in sales:
+        for comm in commissions:
+            sale = comm.sale
+            if not sale:
+                continue
             tickets_list = []
-            for t in s.tickets:
+            for t in sale.tickets:
                 tickets_list.append({
                     "section": t.seat.section.name.replace('20_', ' ') if (t.seat and t.seat.section and t.seat.section.name) else "",
                     "ticket_id": str(t.ticket_id),
-                    "sale_id": str(s.sale_id),
+                    "sale_id": str(sale.sale_id),
                     "price": round((t.price or 0)/100, 2),
                     "row": t.seat.row if t.seat else "",
                     "number": t.seat.number if t.seat else "",
                     "EmissionDate": t.emission_date.isoformat() if t.emission_date else None
                 })
                 total_tickets += 1
-            # revenue for sale = price - discount + fee (stored in cents)
-            sale_revenue_cents = int((s.price or 0) - (s.discount or 0) + (s.fee or 0))
-            total_revenue_cents += sale_revenue_cents
 
-            sale_comm_cents = commissions_map.get(s.sale_id, 0)
+            sale_revenue_cents = int((sale.price or 0) - (sale.discount or 0) + (sale.fee or 0))
+            total_revenue_cents += sale_revenue_cents
+            total_commissions_cents += comm.CommissionAmount or 0
+
             sale_payload = {
-                "sale_id": s.sale_id,
+                "sale_id": sale.sale_id,
                 "price": round(sale_revenue_cents/100, 2),
-                "saleDate": s.creation_date.isoformat() if getattr(s, "creation_date", None) else None,
+                "saleDate": sale.creation_date.isoformat() if getattr(sale, "creation_date", None) else None,
                 "tickets": tickets_list,
-                "paymentsMethod": s.payment.PaymentMethod if s.payment else None,
-                "commission": round(sale_comm_cents/100, 2)
+                "paymentsMethod": sale.payment.PaymentMethod if sale.payment else None,
+                "commission": round((comm.CommissionAmount or 0)/100, 2),
+                "paidOut": comm.PaidOut or False,
+                "receiptLink": comm.linked_payment.ReceiptLink if comm.linked_payment and hasattr(comm.linked_payment, "ReceiptLink") else None,
+                "event": sale.event_rel.name if sale.event_rel else "",
             }
             sales_payload.append(sale_payload)
-
-        # total commissions
-        total_commissions_cents = db.session.query(func.coalesce(func.sum(SellerCommissions.CommissionAmount), 0)).filter(SellerCommissions.SellerID == seller_id).scalar() or 0
 
         stats = {
             "total_sales": len(sales_payload),
@@ -136,7 +133,7 @@ def seller_dashboard():
             "total_tickets_sold": total_tickets
         }
 
-        # all_tickets as flattened list (useful for charts)
+        # all_tickets como lista plana
         all_tickets = []
         for sp in sales_payload:
             for t in sp["tickets"]:
@@ -153,6 +150,10 @@ def seller_dashboard():
         logging.exception(f"Error cargando dashboard vendedor: {e}")
         return jsonify({"message": "Error interno", "status": "error"}), 500
 
+    except Exception as e:
+        logging.exception(f"Error cargando dashboard vendedor: {e}")
+        return jsonify({"message": "Error interno", "status": "error"}), 500
+
 # Endpoint para obtener vendedores + estadísticas (consumido por frontend)
 @sellers.route("/liquidations", methods=["GET"])
 @roles_required(allowed_roles=["admin", "super_admin"])
@@ -163,37 +164,35 @@ def admin_sellers_liquidations():
 
         sellers_payload = []
         for seller in sellers_q:
-            # ventas creadas por este vendedor
-            sales_q = Sales.query.options(
-                joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section),
-                joinedload(Sales.payment),
-                joinedload(Sales.event_rel).load_only(Event.event_id, Event.name),
-                load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.creation_date, Sales.liquidado)
-            ).filter(Sales.created_by == seller.CustomerID, Sales.seller_commission == True).order_by(Sales.creation_date.desc()).all()
+            # Extraer todas las comisiones de este vendedor
+            commissions = SellerCommissions.query.options(
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.event_rel)
+                    .load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.tickets)
+                    .joinedload(Ticket.seat)
+                    .joinedload(Seat.section),
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.payment),
+                joinedload(SellerCommissions.linked_payment)
+            ).filter(SellerCommissions.SellerID == seller.CustomerID).all()
 
             sales_payload = []
             total_tickets = 0
             total_revenue_cents = 0
+            total_commissions_cents = 0
 
-            # preload commissions for these sales for this seller
-            sale_ids = [s.sale_id for s in sales_q]
-            commissions_map = {}
-            if sale_ids:
-                commissions = SellerCommissions.query.filter(
-                    SellerCommissions.SaleID.in_(sale_ids),
-                    SellerCommissions.SellerID == seller.CustomerID
-                ).all()
-                for c in commissions:
-                    commissions_map.setdefault(c.SaleID, [])
-                    commissions_map[c.SaleID].append(c)
-
-            for s in sales_q:
+            for comm in commissions:
+                sale = comm.sale
+                if not sale:
+                    continue
                 tickets_list = []
-                for t in s.tickets:
+                for t in sale.tickets:
                     tickets_list.append({
                         "section": t.seat.section.name.replace('20_', ' ') if (t.seat and t.seat.section and t.seat.section.name) else "",
                         "ticket_id": str(t.ticket_id),
-                        "sale_id": str(s.sale_id),
+                        "sale_id": str(sale.sale_id),
                         "price": round((t.price or 0)/100, 2),
                         "row": t.seat.row if t.seat else "",
                         "number": t.seat.number if t.seat else "",
@@ -201,31 +200,22 @@ def admin_sellers_liquidations():
                     })
                     total_tickets += 1
 
-                sale_revenue_cents = int((s.price or 0) - (s.discount or 0) + (s.fee or 0))
+                sale_revenue_cents = int((sale.price or 0) - (sale.discount or 0) + (sale.fee or 0))
                 total_revenue_cents += sale_revenue_cents
-
-                # comisión específica para este vendedor y venta (suma si hay varios registros)
-                sale_comm_cents = 0
-                paid_out = False
-                for c in commissions_map.get(s.sale_id, []):
-                    sale_comm_cents += (c.CommissionAmount or 0)
-                    if c.PaidOut:
-                        paid_out = True
+                total_commissions_cents += comm.CommissionAmount or 0
 
                 sale_payload = {
-                    "sale_id": s.sale_id,
+                    "sale_id": sale.sale_id,
                     "price": round(sale_revenue_cents/100, 2),
-                    "saleDate": s.creation_date.isoformat() if getattr(s, "creation_date", None) else None,
+                    "saleDate": sale.creation_date.isoformat() if getattr(sale, "creation_date", None) else None,
                     "tickets": tickets_list,
-                    "paymentsMethod": s.payment.PaymentMethod if s.payment else None,
-                    "commission": round(sale_comm_cents/100, 2),
-                    "liquidated": paid_out or bool(getattr(s, "liquidado", False))
+                    "paymentsMethod": sale.payment.PaymentMethod if sale.payment else None,
+                    "commission": round((comm.CommissionAmount or 0)/100, 2),
+                    "liquidated": comm.PaidOut or False,
+                    "receiptLink": comm.linked_payment.ReceiptLink if comm.linked_payment and hasattr(comm.linked_payment, "ReceiptLink") else None,
+                    "event": sale.event_rel.name if sale.event_rel else ""
                 }
                 sales_payload.append(sale_payload)
-
-            total_commissions_cents = db.session.query(
-                func.coalesce(func.sum(SellerCommissions.CommissionAmount), 0)
-            ).filter(SellerCommissions.SellerID == seller.CustomerID).scalar() or 0
 
             stats = {
                 "total_sales": len(sales_payload),
@@ -371,13 +361,148 @@ def admin_sellers_liquidate():
                     pass
             updated += 1
 
-        # Commit final
+        # Commit DB antes de generar PDF (necesitamos el PaymentID)
         db.session.commit()
+
+        # -------------------------
+        # Obtener información del vendedor y ventas para el PDF
+        # -------------------------
+        seller = EventsUsers.query.filter_by(CustomerID=int(seller_id)).first()
+        if not seller:
+            logging.error(f"No se encontró el vendedor con ID {seller_id}")
+            return jsonify({
+                "status": "ok",
+                "updated": updated,
+                "payment_id": new_payment.PaymentID,
+                "warning": "Liquidación creada pero no se pudo generar PDF (vendedor no encontrado)"
+            }), 200
+
+        # Obtener ventas con información completa para el PDF
+        sales = Sales.query.options(
+            joinedload(Sales.tickets),
+            joinedload(Sales.event_rel).load_only(Event.event_id, Event.name)
+        ).filter(Sales.sale_id.in_(sale_ids_int)).all()
+
+        # Preparar datos de ventas para el PDF
+        sales_data = []
+        # Create a dictionary mapping SaleID to commission amounts for O(1) lookup
+        commission_by_sale = {}
+        for c in commissions:
+            commission_by_sale.setdefault(c.SaleID, 0)
+            commission_by_sale[c.SaleID] += (c.CommissionAmount or 0)
+        
+        for sale in sales:
+            # Get commission for this sale from pre-computed dictionary
+            sale_commission = commission_by_sale.get(sale.sale_id, 0)
+            
+            sales_data.append({
+                "sale_id": sale.sale_id,
+                "sale_date": sale.creation_date,
+                "event_name": sale.event_rel.name if sale.event_rel else "N/A",
+                "ticket_count": len(sale.tickets),
+                "sale_amount": (sale.price or 0) - (sale.discount or 0) + (sale.fee or 0),  # Already in cents
+                "commission_amount": sale_commission  # Already in cents
+            })
+
+        # Preparar datos de totales para el PDF
+        totals_pdf = {
+            "totalCommission": total_commission_cents / 100,
+            "totalCharges": total_charges_cents / 100,
+            "totalDiscounts": total_discounts_cents / 100,
+            "finalAmount": final_amount_cents / 100
+        }
+
+        # Parsear cargos adicionales y descuentos para el PDF
+        charges_list = []
+        if additional_charges:
+            for charge in additional_charges:
+                charges_list.append({
+                    "name": charge.get("name", ""),
+                    "amount": charge.get("price", 0) or charge.get("amount", 0)
+                })
+
+        discounts_list = []
+        if discounts:
+            for discount in discounts:
+                discounts_list.append({
+                    "name": discount.get("name", ""),
+                    "amount": discount.get("price", 0) or discount.get("amount", 0)
+                })
+
+        # -------------------------
+        # Generar PDF en memoria
+        # -------------------------
+        pdf_bytes = None
+        try:
+            pdf_bytes = seller_utils.generate_seller_liquidation_pdf(
+                payment=new_payment,
+                seller=seller,
+                sales_data=sales_data,
+                totals=totals_pdf,
+                additional_charges=charges_list,
+                discounts=discounts_list,
+                comments=comments
+            )
+        except Exception as e:
+            logging.exception(f"Error generando PDF de liquidación del vendedor: {e}")
+            # No retornamos error aquí, continuamos sin PDF
+
+        # -------------------------
+        # Subir PDF a S3 y guardar link
+        # -------------------------
+        if pdf_bytes:
+            S3_BUCKET = "imagenes-fiestatravel"
+            payment_id_hash = hashlib.sha256(str(new_payment.PaymentID).encode()).hexdigest()
+            s3_key = f"seller_liquidations/{payment_id_hash}.pdf"
+            
+            try:
+                pdf_url = seller_utils.upload_pdf_to_s3_public(s3, S3_BUCKET, s3_key, pdf_bytes)
+                if pdf_url:
+                    # Guardar URL en la base de datos
+                    new_payment.ReceiptLink = pdf_url
+                    db.session.commit()
+                    logging.info(f"PDF de liquidación guardado en S3: {pdf_url}")
+                else:
+                    logging.error("No se pudo subir el PDF a S3")
+            except Exception as e:
+                logging.exception(f"Error subiendo PDF a S3: {e}")
+
+        # -------------------------
+        # Enviar notificaciones por correo
+        # -------------------------
+        if pdf_bytes:
+            try:
+                # Notificar al vendedor
+                seller_utils.send_seller_liquidation_notification(
+                    config=current_app.config,
+                    seller=seller,
+                    payment=new_payment,
+                    pdf_bytes=pdf_bytes,
+                    totals=totals_pdf,
+                    sale_count=len(sales_data)
+                )
+            except Exception as e:
+                logging.exception(f"Error enviando notificación al vendedor: {e}")
+
+            try:
+                # Notificar a los administradores
+                seller_utils.send_admin_liquidation_notification(
+                    config=current_app.config,
+                    seller=seller,
+                    payment=new_payment,
+                    pdf_bytes=pdf_bytes,
+                    totals=totals_pdf,
+                    sale_count=len(sales_data),
+                    sale_ids=sale_ids_int
+                )
+            except Exception as e:
+                logging.exception(f"Error enviando notificación a administradores: {e}")
 
         return jsonify({
             "status": "ok",
             "updated": updated,
-            "payment_id": getattr(new_payment, "PaymentID", None)
+            "payment_id": new_payment.PaymentID,
+            "receipt_link": new_payment.ReceiptLink
         }), 200
 
     except Exception as e:
