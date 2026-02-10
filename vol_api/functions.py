@@ -241,7 +241,8 @@ def get_debitoinmediato_code(payload):
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
             "concepto": concepto,
-            "token": "1"
+            "token": "1",
+            "indicador": "1"
         }
         if trackingId:
             dt_obj["trackingId"] = trackingId
