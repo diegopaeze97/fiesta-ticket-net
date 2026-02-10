@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="es">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Liquidación de Vendedor - {{ payment.PaymentID }}</title>
+  <style>
+    :root {
+      --primary: #065f46;
+      --accent: #d946ef;
+      --muted: #6b7280;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e6e9ee;
+      --shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+      --radius: 8px;
+    }
+
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      color: #1f2937;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body, section, div, table {
+      break-inside: auto;
+    }
+
+    .letterhead {
+      overflow: visible;
+      background: linear-gradient(90deg, rgba(6, 95, 70, 0.04), rgba(217, 70, 239, 0.02));
+      padding: 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+      position: relative;
+    }
+
+    .logo {
+      width: 92px;
+      height: 92px;
+      float: left;
+      margin-right: 12px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(6, 95, 70, 0.12);
+      flex-shrink: 0;
+    }
+
+    .company {
+      overflow: visible;
+      margin-left: 110px;
+    }
+
+    .company h1 { margin: 0; font-size: 18px; color: var(--primary); }
+    .company .meta { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+
+    .docinfo {
+      text-align: right;
+      min-width: 180px;
+      float: right;
+      margin-top: -80px;
+    }
+
+    .docinfo .title { font-weight: 700; color: var(--primary); font-size: 14px; }
+    .docinfo .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+    .resaltar { color: var(--accent); font-weight: 700; }
+
+    h1,h2,h3 { color: var(--primary); margin: 12px 0 8px 0; }
+    h1 { font-size: 20px }
+    h2 { font-size: 16px }
+    p.small { font-size: 12px; color: var(--muted); margin:4px 0; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+      page-break-inside: auto;
+      overflow: visible;
+      display: block;
+    }
+
+    .info-section {
+      background: #f0fdf4;
+      border-left: 4px solid var(--primary);
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 4px;
+    }
+
+    .info-section h3 {
+      margin-top: 0;
+      color: var(--primary);
+      font-size: 14px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 6px 0;
+      font-size: 13px;
+    }
+
+    .info-label {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .info-value {
+      color: #1f2937;
+      font-weight: 500;
+    }
+
+    table { width:100%; border-collapse: collapse; margin-bottom:8px; font-size:13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #f1f5f9; text-align:left; vertical-align: middle; }
+    thead th { background: linear-gradient(180deg, #fbfdff, #f6fbf9); color:#0f172a; font-weight:600; border-bottom:2px solid var(--border); }
+    tr:nth-child(even) td { background: #ffffff; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .right { text-align: right; }
+
+    .totals { margin-top: 8px; display:flex; justify-content:flex-end; gap:12px; flex-wrap: wrap; }
+    .totals .box { background: #f8fafc; border: 1px solid var(--border); padding: 10px 14px; border-radius:6px; min-width:220px; text-align:left; }
+    .totals .box .label { color: var(--muted); font-size:12px; }
+    .totals .box .value { font-weight:700; color:var(--primary); font-size:15px; text-align:right; display:block; }
+
+    .highlight-box {
+      background: linear-gradient(135deg, rgba(6, 95, 70, 0.05), rgba(217, 70, 239, 0.05));
+      border: 2px solid var(--primary);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+      text-align: center;
+    }
+
+    .highlight-box .amount {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--primary);
+      margin: 8px 0;
+    }
+
+    .highlight-box .label {
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .small-note { font-size:11px; color:var(--muted); margin-top:6px; }
+
+    .page-break { page-break-after: always; break-after: page; margin-top: 18px; }
+
+    @page { size: letter; margin: 20mm; }
+
+    @media print {
+      body { background: white }
+      .letterhead { box-shadow: none; border: 0; padding: 0; margin-bottom: 12px }
+    }
+
+    table, tr, td, th { page-break-inside: auto !important; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+  </style>
+</head>
+
+<body>
+  <header class="letterhead">
+    <div class="logo">FT</div>
+    <div class="company">
+      <h1>Fiesta Ticket</h1>
+      <div class="meta">
+        La Matunga, C.A. - J-500318928<br />
+        Caracas, Venezuela
+      </div>
+    </div>
+    <div class="docinfo">
+      <div class="title">Liquidación de Vendedor</div>
+      <div class="sub">ID: {{ payment.PaymentID }}<br />Fecha: {{ payment.PaymentDate.strftime('%d/%m/%Y') if payment.PaymentDate else 'N/A' }}</div>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="info-section">
+      <h3>👤 Información del Vendedor</h3>
+      <div class="info-row">
+        <span class="info-label">Nombre:</span>
+        <span class="info-value">{{ seller.FirstName }} {{ seller.LastName }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Email:</span>
+        <span class="info-value">{{ seller.Email }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">ID de Vendedor:</span>
+        <span class="info-value">{{ seller.CustomerID }}</span>
+      </div>
+    </div>
+
+    <div class="highlight-box">
+      <div class="label">Monto Total a Recibir</div>
+      <div class="amount">{{ totals.finalAmount | currency }}</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>💰 Resumen Financiero</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Concepto</th>
+          <th class="right">Valor</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="resaltar">
+          <td>Total de Comisiones</td>
+          <td class="right">{{ totals.totalCommission | currency }}</td>
+        </tr>
+        {% if additional_charges %}
+        <tr>
+          <td colspan="2" style="padding-top: 12px;"><strong>Cargos Adicionales:</strong></td>
+        </tr>
+        {% for charge in additional_charges %}
+        <tr>
+          <td style="padding-left: 20px;">{{ charge.name }}</td>
+          <td class="right">{{ charge.amount | currency }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="resaltar">
+          <td><strong>Total Cargos</strong></td>
+          <td class="right">{{ totals.totalCharges | currency }}</td>
+        </tr>
+        {% endif %}
+        {% if discounts %}
+        <tr>
+          <td colspan="2" style="padding-top: 12px;"><strong>Descuentos Aplicados:</strong></td>
+        </tr>
+        {% for discount in discounts %}
+        <tr>
+          <td style="padding-left: 20px;">{{ discount.name }}</td>
+          <td class="right">-{{ discount.amount | currency }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="resaltar">
+          <td><strong>Total Descuentos</strong></td>
+          <td class="right">-{{ totals.totalDiscounts | currency }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    <div class="info-section">
+      <h3>💳 Detalles del Pago</h3>
+      <div class="info-row">
+        <span class="info-label">Método de Pago:</span>
+        <span class="info-value">{{ payment.PaymentMethod }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Referencia:</span>
+        <span class="info-value">{{ payment.Reference or 'N/A' }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Moneda:</span>
+        <span class="info-value">{{ payment.Currency }}</span>
+      </div>
+      {% if payment.Currency == 'bolivares' and payment.AmountBS %}
+      <div class="info-row">
+        <span class="info-label">Monto en Bolívares:</span>
+        <span class="info-value">{{ payment.AmountBS | currency_cents_to_dollars | replace('$', 'BsD') }}</span>
+      </div>
+      {% endif %}
+      <div class="info-row">
+        <span class="info-label">Fecha de Pago:</span>
+        <span class="info-value">{{ payment.PaymentDate.strftime('%d/%m/%Y') if payment.PaymentDate else 'N/A' }}</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="page-break"></div>
+
+  <section class="card">
+    <h2>🎫 Detalle de Ventas Liquidadas</h2>
+    <p class="small">Total de ventas: {{ sales_data|length }}</p>
+    
+    {% if sales_data %}
+    <table>
+      <thead>
+        <tr>
+          <th>ID de Venta</th>
+          <th>Fecha de Venta</th>
+          <th>Evento</th>
+          <th class="right">Boletos</th>
+          <th class="right">Total Venta</th>
+          <th class="right">Comisión</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sale in sales_data %}
+        <tr>
+          <td>{{ sale.sale_id }}</td>
+          <td>{{ sale.sale_date.strftime('%d/%m/%Y') if sale.sale_date else 'N/A' }}</td>
+          <td class="muted">{{ sale.event_name or 'N/A' }}</td>
+          <td class="right">{{ sale.ticket_count }}</td>
+          <td class="right">{{ sale.sale_amount | currency_cents_to_dollars }}</td>
+          <td class="right">{{ sale.commission_amount | currency_cents_to_dollars }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small">No hay ventas registradas en esta liquidación.</p>
+    {% endif %}
+  </section>
+
+  {% if comments %}
+  <section class="card">
+    <h2>📝 Comentarios</h2>
+    <p style="white-space: pre-wrap; line-height: 1.6;">{{ comments }}</p>
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <p class="small-note">
+      Este documento es un comprobante de liquidación generado por el sistema Fiesta Ticket.
+      Para cualquier consulta o aclaración, por favor contacta al equipo de administración.
+    </p>
+  </section>
+</body>
+
+</html>

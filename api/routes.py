@@ -30,7 +30,7 @@ import random
 api = Blueprint('api', __name__)
 
 @api.route("/get-tickets", methods=["GET"])  # obtiene los tickets de un usuario
-@roles_required(allowed_roles=["admin", "customer", "tiquetero", "provider", "super_admin"])
+@roles_required(allowed_roles=["admin", "customer", "seller", "tiquetero", "provider", "super_admin"])
 def get_tickets():
     # obtener user id desde el JWT
     try:
