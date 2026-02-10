@@ -220,7 +220,7 @@ def get_debitoinmediato_code(payload):
             "tipoDatoCuentaBen": tipoDatoCuentaBen,
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
-            "concepto": concepto,
+            "concepto": concepto
         }
         missing = [k for k, v in required_fields.items() if not v]
         if missing:
@@ -240,7 +240,8 @@ def get_debitoinmediato_code(payload):
             "tipoDatoCuentaBen": tipoDatoCuentaBen,
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
-            "concepto": concepto
+            "concepto": concepto,
+            "token": "1"
         }
         if trackingId:
             dt_obj["trackingId"] = trackingId
