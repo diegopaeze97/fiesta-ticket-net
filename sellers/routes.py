@@ -7,6 +7,7 @@ from sqlalchemy import func
 from models import Sales, Ticket, Seat, Event, SellerCommissions, EventsUsers, SellerCommissionPayments
 from decorators.utils import roles_required
 from datetime import datetime, timezone
+import hashlib
 import sellers.utils as seller_utils
 
 sellers = Blueprint('sellers', __name__)
@@ -58,77 +59,72 @@ def get_tickets():
         logging.exception(f"Error obteniendo tickets: {e}")
         return jsonify({"message": "Error interno", "status": "error"}), 500
 
-# Nuevo endpoint para dashboard del vendedor
+# Nuevo endpoint para dashboard del vendedor (usando SellerCommissions como fuente principal)
 @sellers.route("/dashboard", methods=["GET"])
 @roles_required(allowed_roles=["seller", "admin", "super_admin"])
 def seller_dashboard():
     user_role = get_jwt().get("role")
     user_id = get_jwt().get("id")
     try:
-        # Solo vendedores (o admin) pueden ver su dashboard. Si admin, puede pasar sellerId en query
+        # Si admin, puede pasar sellerId en query, si no, usa el del JWT
         seller_id = request.args.get("sellerId")
         if user_role == "admin" and seller_id and str(seller_id).isdigit():
             seller_id = int(seller_id)
         else:
             seller_id = int(user_id)
 
-        # Cargar ventas creadas por este vendedor
-        sales_q = Sales.query.options(
-            joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section),
-            joinedload(Sales.payment),
-            joinedload(Sales.event_rel).load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
-            joinedload(Sales.customer).load_only(EventsUsers.CustomerID, EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email),
-            load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.creation_date)
-        ).filter(Sales.created_by == seller_id).order_by(Sales.creation_date.desc())
-
-        sales = sales_q.all()
+        # Extraer todas las comisiones de este vendedor
+        commissions = SellerCommissions.query.options(
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.event_rel)
+                .load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.tickets)
+                .joinedload(Ticket.seat)
+                .joinedload(Seat.section),
+            joinedload(SellerCommissions.sale)
+                .joinedload(Sales.payment),
+            joinedload(SellerCommissions.linked_payment)
+        ).filter(SellerCommissions.SellerID == seller_id).all()
 
         sales_payload = []
         total_tickets = 0
         total_revenue_cents = 0
+        total_commissions_cents = 0
 
-        # preload commissions for these sales
-        sale_ids = [s.sale_id for s in sales]
-        commissions_map = {}
-        if sale_ids:
-            commissions = SellerCommissions.query.filter(
-                SellerCommissions.SaleID.in_(sale_ids),
-                SellerCommissions.SellerID == seller_id
-            ).all()
-            for c in commissions:
-                commissions_map.setdefault(c.SaleID, 0)
-                commissions_map[c.SaleID] += (c.CommissionAmount or 0)
-
-        for s in sales:
+        for comm in commissions:
+            sale = comm.sale
+            if not sale:
+                continue
             tickets_list = []
-            for t in s.tickets:
+            for t in sale.tickets:
                 tickets_list.append({
                     "section": t.seat.section.name.replace('20_', ' ') if (t.seat and t.seat.section and t.seat.section.name) else "",
                     "ticket_id": str(t.ticket_id),
-                    "sale_id": str(s.sale_id),
+                    "sale_id": str(sale.sale_id),
                     "price": round((t.price or 0)/100, 2),
                     "row": t.seat.row if t.seat else "",
                     "number": t.seat.number if t.seat else "",
                     "EmissionDate": t.emission_date.isoformat() if t.emission_date else None
                 })
                 total_tickets += 1
-            # revenue for sale = price - discount + fee (stored in cents)
-            sale_revenue_cents = int((s.price or 0) - (s.discount or 0) + (s.fee or 0))
-            total_revenue_cents += sale_revenue_cents
 
-            sale_comm_cents = commissions_map.get(s.sale_id, 0)
+            sale_revenue_cents = int((sale.price or 0) - (sale.discount or 0) + (sale.fee or 0))
+            total_revenue_cents += sale_revenue_cents
+            total_commissions_cents += comm.CommissionAmount or 0
+
             sale_payload = {
-                "sale_id": s.sale_id,
+                "sale_id": sale.sale_id,
                 "price": round(sale_revenue_cents/100, 2),
-                "saleDate": s.creation_date.isoformat() if getattr(s, "creation_date", None) else None,
+                "saleDate": sale.creation_date.isoformat() if getattr(sale, "creation_date", None) else None,
                 "tickets": tickets_list,
-                "paymentsMethod": s.payment.PaymentMethod if s.payment else None,
-                "commission": round(sale_comm_cents/100, 2)
+                "paymentsMethod": sale.payment.PaymentMethod if sale.payment else None,
+                "commission": round((comm.CommissionAmount or 0)/100, 2),
+                "paidOut": comm.PaidOut or False,
+                "receiptLink": comm.linked_payment.ReceiptLink if comm.linked_payment and hasattr(comm.linked_payment, "ReceiptLink") else None,
+                "event": sale.event_rel.name if sale.event_rel else "",
             }
             sales_payload.append(sale_payload)
-
-        # total commissions
-        total_commissions_cents = db.session.query(func.coalesce(func.sum(SellerCommissions.CommissionAmount), 0)).filter(SellerCommissions.SellerID == seller_id).scalar() or 0
 
         stats = {
             "total_sales": len(sales_payload),
@@ -137,7 +133,7 @@ def seller_dashboard():
             "total_tickets_sold": total_tickets
         }
 
-        # all_tickets as flattened list (useful for charts)
+        # all_tickets como lista plana
         all_tickets = []
         for sp in sales_payload:
             for t in sp["tickets"]:
@@ -154,6 +150,10 @@ def seller_dashboard():
         logging.exception(f"Error cargando dashboard vendedor: {e}")
         return jsonify({"message": "Error interno", "status": "error"}), 500
 
+    except Exception as e:
+        logging.exception(f"Error cargando dashboard vendedor: {e}")
+        return jsonify({"message": "Error interno", "status": "error"}), 500
+
 # Endpoint para obtener vendedores + estadísticas (consumido por frontend)
 @sellers.route("/liquidations", methods=["GET"])
 @roles_required(allowed_roles=["admin", "super_admin"])
@@ -164,37 +164,35 @@ def admin_sellers_liquidations():
 
         sellers_payload = []
         for seller in sellers_q:
-            # ventas creadas por este vendedor
-            sales_q = Sales.query.options(
-                joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section),
-                joinedload(Sales.payment),
-                joinedload(Sales.event_rel).load_only(Event.event_id, Event.name),
-                load_only(Sales.sale_id, Sales.price, Sales.discount, Sales.fee, Sales.creation_date, Sales.liquidado)
-            ).filter(Sales.created_by == seller.CustomerID, Sales.seller_commission == True).order_by(Sales.creation_date.desc()).all()
+            # Extraer todas las comisiones de este vendedor
+            commissions = SellerCommissions.query.options(
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.event_rel)
+                    .load_only(Event.event_id, Event.name, Event.date_string, Event.hour_string),
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.tickets)
+                    .joinedload(Ticket.seat)
+                    .joinedload(Seat.section),
+                joinedload(SellerCommissions.sale)
+                    .joinedload(Sales.payment),
+                joinedload(SellerCommissions.linked_payment)
+            ).filter(SellerCommissions.SellerID == seller.CustomerID).all()
 
             sales_payload = []
             total_tickets = 0
             total_revenue_cents = 0
+            total_commissions_cents = 0
 
-            # preload commissions for these sales for this seller
-            sale_ids = [s.sale_id for s in sales_q]
-            commissions_map = {}
-            if sale_ids:
-                commissions = SellerCommissions.query.filter(
-                    SellerCommissions.SaleID.in_(sale_ids),
-                    SellerCommissions.SellerID == seller.CustomerID
-                ).all()
-                for c in commissions:
-                    commissions_map.setdefault(c.SaleID, [])
-                    commissions_map[c.SaleID].append(c)
-
-            for s in sales_q:
+            for comm in commissions:
+                sale = comm.sale
+                if not sale:
+                    continue
                 tickets_list = []
-                for t in s.tickets:
+                for t in sale.tickets:
                     tickets_list.append({
                         "section": t.seat.section.name.replace('20_', ' ') if (t.seat and t.seat.section and t.seat.section.name) else "",
                         "ticket_id": str(t.ticket_id),
-                        "sale_id": str(s.sale_id),
+                        "sale_id": str(sale.sale_id),
                         "price": round((t.price or 0)/100, 2),
                         "row": t.seat.row if t.seat else "",
                         "number": t.seat.number if t.seat else "",
@@ -202,31 +200,22 @@ def admin_sellers_liquidations():
                     })
                     total_tickets += 1
 
-                sale_revenue_cents = int((s.price or 0) - (s.discount or 0) + (s.fee or 0))
+                sale_revenue_cents = int((sale.price or 0) - (sale.discount or 0) + (sale.fee or 0))
                 total_revenue_cents += sale_revenue_cents
-
-                # comisión específica para este vendedor y venta (suma si hay varios registros)
-                sale_comm_cents = 0
-                paid_out = False
-                for c in commissions_map.get(s.sale_id, []):
-                    sale_comm_cents += (c.CommissionAmount or 0)
-                    if c.PaidOut:
-                        paid_out = True
+                total_commissions_cents += comm.CommissionAmount or 0
 
                 sale_payload = {
-                    "sale_id": s.sale_id,
+                    "sale_id": sale.sale_id,
                     "price": round(sale_revenue_cents/100, 2),
-                    "saleDate": s.creation_date.isoformat() if getattr(s, "creation_date", None) else None,
+                    "saleDate": sale.creation_date.isoformat() if getattr(sale, "creation_date", None) else None,
                     "tickets": tickets_list,
-                    "paymentsMethod": s.payment.PaymentMethod if s.payment else None,
-                    "commission": round(sale_comm_cents/100, 2),
-                    "liquidated": paid_out or bool(getattr(s, "liquidado", False))
+                    "paymentsMethod": sale.payment.PaymentMethod if sale.payment else None,
+                    "commission": round((comm.CommissionAmount or 0)/100, 2),
+                    "liquidated": comm.PaidOut or False,
+                    "receiptLink": comm.linked_payment.ReceiptLink if comm.linked_payment and hasattr(comm.linked_payment, "ReceiptLink") else None,
+                    "event": sale.event_rel.name if sale.event_rel else ""
                 }
                 sales_payload.append(sale_payload)
-
-            total_commissions_cents = db.session.query(
-                func.coalesce(func.sum(SellerCommissions.CommissionAmount), 0)
-            ).filter(SellerCommissions.SellerID == seller.CustomerID).scalar() or 0
 
             stats = {
                 "total_sales": len(sales_payload),
@@ -463,7 +452,8 @@ def admin_sellers_liquidate():
         # -------------------------
         if pdf_bytes:
             S3_BUCKET = "imagenes-fiestatravel"
-            s3_key = f"seller_liquidations/{new_payment.PaymentID}.pdf"
+            payment_id_hash = hashlib.sha256(str(new_payment.PaymentID).encode()).hexdigest()
+            s3_key = f"seller_liquidations/{payment_id_hash}.pdf"
             
             try:
                 pdf_url = seller_utils.upload_pdf_to_s3_public(s3, S3_BUCKET, s3_key, pdf_bytes)

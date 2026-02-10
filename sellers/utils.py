@@ -241,8 +241,7 @@ def upload_pdf_to_s3_public(s3, bucket, key, pdf_bytes):
             Bucket=bucket,
             Key=key,
             Body=pdf_bytes,
-            ContentType='application/pdf',
-            ACL='public-read'
+            ContentType='application/pdf'
         )
         url = f"https://{bucket}.s3.amazonaws.com/{key}"
         logging.info(f"PDF subido exitosamente a S3: {url}")
