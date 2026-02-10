@@ -197,7 +197,7 @@ def get_debitoinmediato_code(payload):
         cuentaBen = payload.get("cuentaBen", None)
         codBancoBen = payload.get("codBancoBen", None)
         concepto = payload.get("concepto", None)
-        trackingId = payload.get("trackingId", None)
+        trackingId = payload.get("trackingId", "1234")
 
         # Required checks
         if monto is None or monto == "":
