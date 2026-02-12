@@ -242,10 +242,12 @@ def get_debitoinmediato_code(payload):
             "codBancoBen": codBancoBen,
             "concepto": concepto,
             "token": "1",
-            "indicador": "1"
+            "indicador": "1",
+            "trackingId": "123456" # prueba con trackingId fijo, ya que el banco lo requiere pero no especifica formato ni validación. En producción, se podría generar un UUID o similar para cada transacción.
+
         }
-        if trackingId:
-            dt_obj["trackingId"] = trackingId
+        #if trackingId:
+        #    dt_obj["trackingId"] = trackingId
 
         logging.info("Construyendo DT débito inmediato para beneficiario: %s", nombreBen)
 
