@@ -1255,7 +1255,7 @@ def block_tickets():
                     payment.Status = 'pagado'
                     sale.status = 'pagado'
                     sale.StatusFinanciamiento = 'pagado'
-                    sale.paid = total_abono
+                    sale.paid = total_abono * 100
 
                     notify_customer =  eventos_services.bvc_api_verification_success(current_app.config, tickets_en_carrito, payment, customer, discount_code, validated_addons, total_price_addons)
 

@@ -208,6 +208,8 @@ def get_debitoinmediato_code():
         codBancoBen = payload.get("codBancoBen", None)
         concepto = payload.get("concepto", None)
         trackingId = payload.get("trackingId", None)
+        indicador = payload.get("indicador", "1")  # valor por defecto "1" si no se proporciona
+        token = payload.get("token", "1")  # valor por defecto "1" si no se proporciona
 
         # Required checks
         if monto is None or monto == "":
@@ -249,10 +251,16 @@ def get_debitoinmediato_code():
             "tipoDatoCuentaBen": tipoDatoCuentaBen,
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
-            "concepto": concepto
+            "concepto": concepto,
+            "token": token,  # según documentación, este campo es obligatorio pero no se especifica formato ni validación. En producción, se podría usar un token real o similar.
+            "trackingId": trackingId if trackingId else "123456",  # prueba con trackingId fijo, ya que el banco lo requiere pero no especifica formato ni validación. En producción, se podría generar un UUID o similar para cada transacción.
+            "indicador": indicador,  # según documentación, este campo es obligatorio pero no se especifica formato ni validación. En producción, se podría usar un valor real o similar.
+            "identificadorTercero": "TEST12345",  # campo adicional de prueba, no especificado en la documentación pero puede ser requerido por el banco.
+            "chargerId": "TEST12345"  # campo adicional de prueba, no especificado en la documentación pero puede ser requerido por el banco.
+
         }
-        if trackingId:
-            dt_obj["trackingId"] = trackingId
+        #if trackingId:
+        #    dt_obj["trackingId"] = trackingId
 
         logging.info("Construyendo DT débito inmediato para beneficiario: %s", nombreBen)
 
