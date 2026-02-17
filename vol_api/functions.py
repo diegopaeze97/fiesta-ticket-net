@@ -197,7 +197,7 @@ def get_debitoinmediato_code(payload):
         cuentaBen = payload.get("cuentaBen", None)
         codBancoBen = payload.get("codBancoBen", None)
         concepto = payload.get("concepto", None)
-        trackingId = payload.get("trackingId", None)
+        trackingId = payload.get("trackingId", "1234")
 
         # Required checks
         if monto is None or monto == "":
@@ -220,7 +220,7 @@ def get_debitoinmediato_code(payload):
             "tipoDatoCuentaBen": tipoDatoCuentaBen,
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
-            "concepto": concepto,
+            "concepto": concepto
         }
         missing = [k for k, v in required_fields.items() if not v]
         if missing:
@@ -240,10 +240,16 @@ def get_debitoinmediato_code(payload):
             "tipoDatoCuentaBen": tipoDatoCuentaBen,
             "cuentaBen": cuentaBen,
             "codBancoBen": codBancoBen,
-            "concepto": concepto
+            "concepto": concepto,
+            "token": "1",
+            "indicador": "1",
+            "trackingId": "123456" # prueba con trackingId fijo, ya que el banco lo requiere pero no especifica formato ni validación. En producción, se podría generar un UUID o similar para cada transacción.
+
         }
-        if trackingId:
-            dt_obj["trackingId"] = trackingId
+        #if trackingId:
+        #    dt_obj["trackingId"] = trackingId
+
+        print("DT object (debit): %s", dt_obj)
 
         logging.info("Construyendo DT débito inmediato para beneficiario: %s", nombreBen)
 
