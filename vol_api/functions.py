@@ -249,6 +249,8 @@ def get_debitoinmediato_code(payload):
         #if trackingId:
         #    dt_obj["trackingId"] = trackingId
 
+        print("DT object (debit): %s", dt_obj)
+
         logging.info("Construyendo DT débito inmediato para beneficiario: %s", nombreBen)
 
         dt_string = json.dumps(dt_obj, separators=(",", ":"), ensure_ascii=False)
