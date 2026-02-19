@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entradas - {{ event.name }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .event-info {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 0 20px 20px 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .event-info h2 {
+            color: #667eea;
+            font-size: 20px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .event-details {
+            display: table;
+            width: 100%;
+        }
+
+        .event-details .row {
+            display: table-row;
+        }
+
+        .event-details .label {
+            display: table-cell;
+            font-weight: bold;
+            color: #666;
+            padding: 5px 10px 5px 0;
+            width: 100px;
+        }
+
+        .event-details .value {
+            display: table-cell;
+            padding: 5px 0;
+        }
+
+        .customer-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 0 20px 20px 20px;
+        }
+
+        .customer-info h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .tickets-container {
+            padding: 0 20px;
+        }
+
+        .ticket {
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 15px;
+            margin-bottom: 25px;
+            overflow: hidden;
+            page-break-inside: avoid;
+        }
+
+        .ticket-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            display: table;
+            width: 100%;
+        }
+
+        .ticket-header .ticket-number {
+            display: table-cell;
+            font-size: 18px;
+            font-weight: bold;
+            vertical-align: middle;
+        }
+
+        .ticket-header .localizador {
+            display: table-cell;
+            text-align: right;
+            vertical-align: middle;
+        }
+
+        .ticket-header .localizador span {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            letter-spacing: 2px;
+        }
+
+        .ticket-body {
+            display: table;
+            width: 100%;
+            padding: 20px;
+        }
+
+        .ticket-details {
+            display: table-cell;
+            width: 60%;
+            vertical-align: top;
+        }
+
+        .ticket-qr {
+            display: table-cell;
+            width: 40%;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .ticket-qr img {
+            width: 150px;
+            height: 150px;
+            border: 3px solid #667eea;
+            border-radius: 10px;
+            padding: 5px;
+            background: white;
+        }
+
+        .ticket-qr p {
+            font-size: 10px;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .detail-row {
+            margin-bottom: 12px;
+        }
+
+        .detail-row .label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 3px;
+        }
+
+        .detail-row .value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .detail-row .value.section {
+            color: #667eea;
+            font-size: 20px;
+        }
+
+        .ticket-footer {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-top: 1px dashed #ddd;
+        }
+
+        .price-info {
+            display: table;
+            width: 100%;
+        }
+
+        .price-info .item {
+            display: table-row;
+        }
+
+        .price-info .item span {
+            display: table-cell;
+            padding: 3px 0;
+        }
+
+        .price-info .item span:last-child {
+            text-align: right;
+            font-weight: bold;
+        }
+
+        .price-info .total {
+            border-top: 2px solid #667eea;
+            margin-top: 5px;
+            padding-top: 8px;
+        }
+
+        .price-info .total span {
+            font-size: 16px;
+            color: #667eea;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 30px 20px;
+            color: #888;
+            font-size: 11px;
+        }
+
+        .footer .warning {
+            background: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .footer .warning strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>🎫 Fiesta Ticket</h1>
+        <p>Tus entradas están listas</p>
+    </div>
+
+    <div class="event-info">
+        <h2>{{ event.name }}</h2>
+        <div class="event-details">
+            <div class="row">
+                <span class="label">📍 Lugar:</span>
+                <span class="value">{{ event.venue }}</span>
+            </div>
+            <div class="row">
+                <span class="label">📅 Fecha:</span>
+                <span class="value">{{ event.date }}</span>
+            </div>
+            <div class="row">
+                <span class="label">🕐 Hora:</span>
+                <span class="value">{{ event.hour }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="customer-info">
+        <h3>👤 Titular de las entradas</h3>
+        <p><strong>{{ customer.FirstName }} {{ customer.LastName }}</strong></p>
+        <p>{{ customer.Email }}</p>
+    </div>
+
+    <div class="tickets-container">
+        {% for ticket in tickets %}
+        <div class="ticket">
+            <div class="ticket-header">
+                <div class="ticket-number">Entrada #{{ loop.index }} de {{ total_tickets }}</div>
+                <div class="localizador">
+                    <span>{{ ticket.localizador }}</span>
+                </div>
+            </div>
+
+            <div class="ticket-body">
+                <div class="ticket-details">
+                    <div class="detail-row">
+                        <div class="label">Sección</div>
+                        <div class="value section">{{ ticket.section }}</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="label">Fila</div>
+                        <div class="value">{{ ticket.row }}</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="label">Asiento</div>
+                        <div class="value">{{ ticket.number }}</div>
+                    </div>
+                </div>
+
+                <div class="ticket-qr">
+                    {% if ticket.qr_link %}
+                    <img src="{{ ticket.qr_link }}" alt="Código QR">
+                    {% else %}
+                    <div
+                        style="width: 150px; height: 150px; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; margin: 0 auto;">
+                        <span style="color: #999;">QR no disponible</span>
+                    </div>
+                    {% endif %}
+                    <p>Escanea para validar tu entrada</p>
+                </div>
+            </div>
+
+            <div class="ticket-footer">
+                <div class="price-info">
+                    <div class="item">
+                        <span>Precio base:</span>
+                        <span>${{ "%.2f"|format(ticket.price) }}</span>
+                    </div>
+                    {% if ticket.fee > 0 %}
+                    <div class="item">
+                        <span>Cargo por servicio:</span>
+                        <span>${{ "%.2f"|format(ticket.fee) }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.discount > 0 %}
+                    <div class="item">
+                        <span>Descuento:</span>
+                        <span>-${{ "%.2f"|format(ticket.discount) }}</span>
+                    </div>
+                    {% endif %}
+                    <div class="item total">
+                        <span>Total:</span>
+                        <span>${{ "%.2f"|format(ticket.total) }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="footer">
+        <div class="warning">
+            <strong>⚠️ Importante</strong>
+            Presenta tu código QR en la entrada del evento. Puedes mostrarlo desde tu celular o imprimirlo.
+            Cada entrada es válida para una sola persona y un solo uso.
+        </div>
+        <p>Este documento fue generado automáticamente por Fiesta Ticket.</p>
+        <p>Si tienes alguna pregunta, contáctanos en soporte@fiestaticket.com</p>
+    </div>
+</body>
+
+</html>

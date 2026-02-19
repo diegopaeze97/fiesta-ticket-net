@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tus entradas para {{ event.name }}</title>
+</head>
+
+<body style="margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+        style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+        <!-- Header -->
+        <tr>
+            <td
+                style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🎫 Fiesta Ticket</h1>
+                <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 16px;">Tus entradas están listas
+                </p>
+            </td>
+        </tr>
+
+        <!-- Saludo -->
+        <tr>
+            <td style="padding: 30px 30px 20px 30px;">
+                <h2 style="color: #333; margin: 0 0 15px 0; font-size: 22px;">¡Hola {{ customer.FirstName }}! 👋</h2>
+                <p style="color: #666; font-size: 16px; line-height: 1.6; margin: 0;">
+                    Te reenviamos tus entradas para el evento. Adjunto a este correo encontrarás un PDF con todos tus
+                    tickets y códigos QR.
+                </p>
+            </td>
+        </tr>
+
+        <!-- Información del evento -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0"
+                    style="background-color: #f8f9fa; border-radius: 10px; overflow: hidden;">
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px 20px;">
+                            <h3 style="color: #ffffff; margin: 0; font-size: 18px;">📋 Detalles del Evento</h3>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px;">
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td style="padding: 8px 0;">
+                                        <span style="color: #888; font-size: 12px; text-transform: uppercase;">🎭
+                                            Evento</span><br>
+                                        <strong style="color: #333; font-size: 18px;">{{ event.name }}</strong>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 0;">
+                                        <span style="color: #888; font-size: 12px; text-transform: uppercase;">📍
+                                            Lugar</span><br>
+                                        <strong style="color: #333; font-size: 16px;">{{ event.venue }}</strong>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 0;">
+                                        <span style="color: #888; font-size: 12px; text-transform: uppercase;">📅
+                                            Fecha</span><br>
+                                        <strong style="color: #333; font-size: 16px;">{{ event.date }}</strong>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 0;">
+                                        <span style="color: #888; font-size: 12px; text-transform: uppercase;">🕐
+                                            Hora</span><br>
+                                        <strong style="color: #333; font-size: 16px;">{{ event.hour }}</strong>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- Resumen de tickets -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0"
+                    style="background-color: #fff; border: 2px solid #667eea; border-radius: 10px; overflow: hidden;">
+                    <tr>
+                        <td style="background-color: #667eea; padding: 15px 20px;">
+                            <h3 style="color: #ffffff; margin: 0; font-size: 18px;">🎟️ Tus Entradas ({{ total_tickets
+                                }})</h3>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px;">
+                            {% for ticket in tickets %}
+                            <table width="100%" cellpadding="0" cellspacing="0"
+                                style="margin-bottom: {% if not loop.last %}15px{% else %}0{% endif %}; {% if not loop.last %}border-bottom: 1px dashed #ddd; padding-bottom: 15px;{% endif %}">
+                                <tr>
+                                    <td>
+                                        <table width="100%" cellpadding="0" cellspacing="0">
+                                            <tr>
+                                                <td style="width: 60%;">
+                                                    <span
+                                                        style="background: #667eea; color: white; padding: 3px 10px; border-radius: 15px; font-size: 12px; font-weight: bold;">Entrada
+                                                        #{{ loop.index }}</span>
+                                                    <p style="margin: 10px 0 5px 0;">
+                                                        <strong style="color: #667eea; font-size: 18px;">{{
+                                                            ticket.section }}</strong>
+                                                    </p>
+                                                    <p style="margin: 0; color: #666;">
+                                                        Fila: <strong>{{ ticket.row }}</strong> | Asiento: <strong>{{
+                                                            ticket.number }}</strong>
+                                                    </p>
+                                                </td>
+                                                <td style="width: 40%; text-align: right;">
+                                                    <span
+                                                        style="background: #f0f0f0; padding: 5px 12px; border-radius: 5px; font-family: monospace; font-size: 14px; letter-spacing: 1px;">{{
+                                                        ticket.localizador }}</span>
+                                                    <p
+                                                        style="margin: 10px 0 0 0; color: #667eea; font-weight: bold; font-size: 18px;">
+                                                        ${{ "%.2f"|format(ticket.total) }}
+                                                    </p>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- Información importante -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0"
+                    style="background-color: #fff3cd; border-radius: 10px; border-left: 4px solid #ffc107;">
+                    <tr>
+                        <td style="padding: 20px;">
+                            <h4 style="color: #856404; margin: 0 0 10px 0; font-size: 16px;">⚠️ Información Importante
+                            </h4>
+                            <ul
+                                style="color: #856404; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.8;">
+                                <li>Presenta tu código QR en la entrada del evento</li>
+                                <li>Puedes mostrar el QR desde tu celular o imprimir el PDF adjunto</li>
+                                <li>Cada entrada es válida para una sola persona</li>
+                                <li>Llega con anticipación para evitar contratiempos</li>
+                            </ul>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- CTA -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px; text-align: center;">
+                <p style="color: #666; font-size: 14px; margin: 0 0 15px 0;">
+                    📎 <strong>Revisa el PDF adjunto</strong> con tus entradas y códigos QR
+                </p>
+            </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+            <td style="background-color: #333; padding: 30px; text-align: center;">
+                <p style="color: #999; margin: 0 0 10px 0; font-size: 14px;">
+                    ¿Tienes alguna pregunta? Contáctanos
+                </p>
+                <p style="color: #667eea; margin: 0; font-size: 14px;">
+                    soporte@fiestaticket.com
+                </p>
+                <p style="color: #666; margin: 20px 0 0 0; font-size: 12px;">
+                    © 2026 Fiesta Ticket. Todos los derechos reservados.
+                </p>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
