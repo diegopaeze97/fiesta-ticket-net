@@ -154,6 +154,13 @@
                                                     {{ (sale_data['net_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD
                                                 </td>
                                             </tr>
+                                            {% if sale_data['fee'] and sale_data['fee'] > 0 %}
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">Fee de Servicio:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{ (sale_data['fee']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
+                                            </tr>
+                                            {% endif %}
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">

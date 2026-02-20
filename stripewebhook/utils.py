@@ -392,6 +392,7 @@ def handle_checkout_completed(data, config):
                 'date': payment.sale.event_rel.date_string,
                 'hour': payment.sale.event_rel.hour_string,
                 'price': round(payment.sale.price / 100, 2),
+                'fee': round(payment.sale.fee / 100, 2) if payment.sale.fee else 0,
                 'iva_amount': round(amount_IVA / 100, 2),
                 'net_amount': round(amount_no_IVA / 100, 2),
                 'total_abono': round(received / 100, 2),
