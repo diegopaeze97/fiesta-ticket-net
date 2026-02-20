@@ -1600,6 +1600,8 @@ def view_ticket():
             venue_name = ticket.event.venue.name if ticket.event_id and ticket.event.venue else ''
             event_date = ticket.event.date_string if ticket.event_id else ''
             event_hour = ticket.event.hour_string if ticket.event_id else ''
+            section = ticket.seat.section.name if ticket.seat and ticket.seat.section else ''
+            section = section.replace('20_', ' ') if section else ''
 
             fee = ticket.fee if ticket.fee else 0
             discount = round(ticket.discount/100, 2) if ticket.discount else 0
@@ -1607,7 +1609,7 @@ def view_ticket():
             information['ticketID'] = ticket.ticket_id
             information['row'] = ticket.seat.row
             information['number'] = ticket.seat.number
-            information['section'] = ticket.seat.section.name
+            information['section'] = section
             information['price'] = round(ticket.price/100, 2)
             information['fee'] = round(fee)/100
             information['discount'] = round(discount)/100

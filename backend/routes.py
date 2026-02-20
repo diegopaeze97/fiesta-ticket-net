@@ -23,6 +23,8 @@ import time
 import calendar
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+import qrcode
+import io
 import backend.utils as utils_backend
 
 
@@ -3563,6 +3565,7 @@ def approve_abono():
                         continue
 
                 total_fee= 0
+                tickets_data_for_pdf = []
 
                 tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
                 total_price = payment.sale.price
@@ -3667,7 +3670,28 @@ def approve_abono():
                     total_fee += ticket.fee if ticket.fee else 0
 
                     if event.type_of_event == 'espectaculo':
-                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+                        # Generate QR code and upload to S3
+                        qr_gen = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+                        qr_gen.add_data(qr_link)
+                        qr_gen.make(fit=True)
+                        qr_image = qr_gen.make_image(fill_color="black", back_color="white")
+                        qr_url = utils.update_user_gallery_newQR(qr_image, db, ticket, s3)
+
+                        section_name = ticket.seat.section.name if (ticket.seat and ticket.seat.section) else "N/A"
+                        section_name = section_name.replace('20_', ' ')
+                        tickets_data_for_pdf.append({
+                            'ticket_id': ticket.ticket_id,
+                            'section': section_name,
+                            'row': sale_data['row'],
+                            'number': sale_data['number'],
+                            'price': sale_data['price'],
+                            'fee': sale_data['fee'],
+                            'discount': sale_data['discount'],
+                            'total': sale_data['total'],
+                            'localizador': localizador,
+                            'qr_link': qr_url,
+                            'ticket_link': qr_link
+                        })
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
                 amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
@@ -3729,7 +3753,21 @@ def approve_abono():
                     db.session.rollback() 
                     return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
-                utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+                event_data_for_pdf = {
+                    'name': event.name or "N/A",
+                    'venue': event.venue.name if event.venue else "N/A",
+                    'date': event.date_string or "N/A",
+                    'hour': event.hour_string or "N/A",
+                    'sale_locator': payment.sale.saleLocator or "N/A"
+                }
+                pdf_bytes = None
+                if tickets_data_for_pdf:
+                    try:
+                        pdf_bytes = utils_backend.generate_tickets_pdf(customer, event_data_for_pdf, tickets_data_for_pdf)
+                    except Exception as e:
+                        logging.error(f"Error generando PDF de tickets para factura: {e}")
+
+                utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data, pdf_bytes=pdf_bytes)
             else:
 
                 sale_data = {
@@ -4732,6 +4770,156 @@ def resend_ticket():
         db.session.rollback()
         logging.error(f"Error al reenviar ticket: {e}")
         return jsonify({'message': 'Error al reenviar ticket', 'status': 'error'}), 500
+    finally:
+        db.session.close()
+
+@backend.route('/resend-tickets', methods=['PUT'])  #ruta para enviar nuevamente los tickets de una venta (en caso de que el cliente no los haya recibido o los haya perdido)
+@roles_required(allowed_roles=["admin", "tiquetero"])
+def resend_tickets():
+    try:
+        # 1. Extraer datos del formulario
+        SaleId = request.args.get('query')
+
+        if not SaleId:
+            return jsonify({'message': 'Faltan datos obligatorios', 'status': 'error'}), 400
+
+        # 2. Buscar la venta con toda la información necesaria
+        sale = Sales.query.options(
+            joinedload(Sales.customer),
+            joinedload(Sales.event_rel).joinedload(Event.venue),
+            joinedload(Sales.tickets).joinedload(Ticket.seat).joinedload(Seat.section)
+        ).filter(
+            Sales.sale_id == int(SaleId)
+        ).one_or_none()
+
+        if not sale:
+            return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 404
+
+        if not sale.tickets:
+            return jsonify({'message': 'La venta no tiene tickets asociados', 'status': 'error'}), 400
+
+        if not sale.customer:
+            return jsonify({'message': 'No se encontró el cliente asociado', 'status': 'error'}), 400
+
+        if sale.status != 'pagado':
+            return jsonify({'message': 'La venta no se encuentra pagada', 'status': 'error'}), 400
+
+        customer = sale.customer
+        event = sale.event_rel
+
+        # 3. Preparar lista de tickets para el PDF
+        tickets_data = []
+        
+        for ticket in sale.tickets:
+            # Verificar que el ticket esté pagado
+            if ticket.status != 'pagado':
+                logging.warning(f"Ticket {ticket.ticket_id} no está pagado, saltando...")
+                continue
+
+            # Generar QR y token si no existe
+            if not ticket.saleLink:
+                token = ticket.saleLink 
+                localizador = ticket.saleLocator
+
+            # Generar y subir QR a S3 si no existe
+            if not ticket.QRlink:
+                try:
+                    qr_url = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={ticket.saleLink}'
+                    
+                    # Generar QR code
+                    qr = qrcode.QRCode(
+                        version=1,
+                        error_correction=qrcode.constants.ERROR_CORRECT_L,
+                        box_size=10,
+                        border=4,
+                    )
+                    qr.add_data(qr_url)
+                    qr.make(fit=True)
+                    
+                    qr_img = qr.make_image(fill_color="black", back_color="white")
+                    
+                    # Convertir a bytes
+                    img_byte_arr = io.BytesIO()
+                    qr_img.save(img_byte_arr, format='PNG')
+                    img_byte_arr.seek(0)
+                    
+                    # Subir a S3
+                    S3_BUCKET = "imagenes-fiestatravel"
+                    qr_key = f"qr_codes/ticket_{ticket.ticket_id}_{ticket.saleLocator}.png"
+                    
+                    s3.put_object(
+                        Bucket=S3_BUCKET,
+                        Key=qr_key,
+                        Body=img_byte_arr.getvalue(),
+                        ContentType='image/png'
+                    )
+                    
+                    ticket.QRlink = f"https://{S3_BUCKET}.s3.amazonaws.com/{qr_key}"
+                    logging.info(f"QR generado y subido para ticket {ticket.ticket_id}: {ticket.QRlink}")
+                    
+                except Exception as e:
+                    logging.error(f"Error generando QR para ticket {ticket.ticket_id}: {e}")
+                    # Continuar sin QR pero con el link
+                    ticket.QRlink = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={ticket.saleLink}'
+
+            # Preparar datos del ticket para el PDF
+            section_name = ticket.seat.section.name if (ticket.seat and ticket.seat.section) else "N/A"
+            section_name = section_name.replace('20_', ' ')
+            
+            ticket_data = {
+                'ticket_id': ticket.ticket_id,
+                'section': section_name,
+                'row': ticket.seat.row if ticket.seat else "N/A",
+                'number': ticket.seat.number if ticket.seat else "N/A",
+                'price': round((ticket.price or 0) / 100, 2),
+                'fee': round((ticket.fee or 0) / 100, 2),
+                'discount': round((ticket.discount or 0) / 100, 2),
+                'total': round(((ticket.price or 0) + (ticket.fee or 0) - (ticket.discount or 0)) / 100, 2),
+                'localizador': ticket.saleLocator or "N/A",
+                'qr_link': ticket.QRlink,
+                'ticket_link': f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/tickets?query={ticket.saleLink}'
+            }
+            tickets_data.append(ticket_data)
+
+        if not tickets_data:
+            return jsonify({'message': 'No hay tickets pagados para reenviar', 'status': 'error'}), 400
+
+        # 4. Preparar información del evento
+        event_data = {
+            'name': event.name if event else "N/A",
+            'venue': event.venue.name if (event and event.venue) else "N/A",
+            'date': event.date_string if event else "N/A",
+            'hour': event.hour_string if event else "N/A",
+            'sale_locator': sale.saleLocator or "N/A"
+        }
+
+        # 5. Generar PDF con todos los tickets
+        try:
+            pdf_bytes = utils_backend.generate_tickets_pdf(customer, event_data, tickets_data)
+        except Exception as e:
+            logging.error(f"Error generando PDF de tickets: {e}")
+            return jsonify({'message': 'Error generando PDF de tickets', 'status': 'error'}), 500
+
+        # 6. Enviar email al cliente con el PDF adjunto
+        try:
+            utils_backend.send_tickets_email(current_app.config, customer, event_data, tickets_data, pdf_bytes)
+        except Exception as e:
+            logging.error(f"Error enviando email de tickets: {e}")
+            return jsonify({'message': 'Error enviando email de tickets', 'status': 'error'}), 500
+
+        # 7. Guardar cambios en la base de datos (QR links actualizados)
+        db.session.commit()
+
+        return jsonify({
+            'message': f'Tickets reenviados exitosamente a {customer.Email}',
+            'status': 'ok',
+            'tickets_sent': len(tickets_data)
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error al reenviar tickets: {e}", exc_info=True)
+        return jsonify({'message': 'Error al reenviar tickets', 'status': 'error'}), 500
     finally:
         db.session.close()
     
