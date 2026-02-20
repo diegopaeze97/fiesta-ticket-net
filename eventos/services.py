@@ -82,15 +82,32 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             }
             tickets.append(sale_data)
             
-        IVA = config.get('IVA_PERCENTAGE', 0) / 100
-        base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
-        amount_IVA = payment.Amount - base_amount_no_IVA
+        # Cálculo del desglose fiscal según nueva lógica:
+        # IVA_PERCENTAGE: 1600 = 16%, FEE_PERCENTAGE: 700 = 7%
+        IVA_RATE = config.get('IVA_PERCENTAGE', 0) / 10000  # 1600 -> 0.16
+        FEE_RATE = config.get('FEE_PERCENTAGE', 700) / 10000  # 700 -> 0.07
+        
+        # Total final pagado (en centavos)
+        total_final = payment.Amount
+        
+        # 1. Hallar la Base Imponible Total (incluye compra + fee antes del IVA)
+        total_base = total_final / (1 + IVA_RATE)
+        
+        # 2. Calcular el IVA
+        iva_amount = total_final - total_base
+        
+        # 3. Desglosar la Base Imponible en Compra y Fee
+        # El fee es el 7% que se cobró sobre el precio base de la compra
+        precio_base_fee = total_base - (total_base / (1 + FEE_RATE))
+        precio_base_compra = total_base - precio_base_fee
+        
         BsDexchangeRate = customer.BsDExchangeRate
-        total_fee = payment.sale.fee
         amount_discount = payment.sale.discount
         currency = 'bsd'
 
-        print(IVA, base_amount_no_IVA, amount_IVA, BsDexchangeRate, total_fee, amount_discount)
+        total_fee = (payment.sale.event_rel.Fee or 0) * total_price / 100
+
+        print(f"IVA_RATE: {IVA_RATE}, total_base: {total_base}, iva_amount: {iva_amount}, fee_base: {precio_base_fee}, purchase_base: {precio_base_compra}")
 
         sale_data = {
             'sale_id': str(payment.sale.sale_id),
@@ -99,9 +116,12 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             'date': payment.sale.event_rel.date_string,
             'hour': payment.sale.event_rel.hour_string,
             'price': round(payment.sale.price / 100, 2),
-            'iva_amount': round(amount_IVA / 100, 2),       
-            'net_amount': round(base_amount_no_IVA / 100, 2),
-            'total_abono': round(payment.Amount / 100, 2),
+            'fee': round(precio_base_fee / 100, 2),  # Fee base (sin IVA)
+            'fee_base': round(precio_base_fee / 100, 2),  # El 7% extraído de la base
+            'purchase_base': round(precio_base_compra / 100, 2),  # El neto real del producto
+            'iva_amount': round(iva_amount / 100, 2),  # 16% del total_base
+            'net_amount': round(total_base / 100, 2),  # Base Imponible Total (compra + fee antes de IVA)
+            'total_abono': round(total_final / 100, 2),
             'payment_method': payment.PaymentMethod,
             'payment_date': payment.PaymentDate.strftime('%d-%m-%Y'),
             'reference': payment.Reference or 'N/A',
@@ -395,14 +415,31 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             }
             tickets.append(sale_data)
             
-        IVA = config.get('IVA_PERCENTAGE', 0) / 100
-        base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
-        amount_IVA = payment.Amount - base_amount_no_IVA
+        # Cálculo del desglose fiscal según nueva lógica:
+        # IVA_PERCENTAGE: 1600 = 16%, FEE_PERCENTAGE: 700 = 7%
+        IVA_RATE = config.get('IVA_PERCENTAGE', 0) / 10000  # 1600 -> 0.16
+        FEE_RATE = config.get('FEE_PERCENTAGE', 700) / 10000  # 700 -> 0.07
+        
+        # Total final pagado (en centavos)
+        total_final = payment.Amount
+        
+        # 1. Hallar la Base Imponible Total (incluye compra + fee antes del IVA)
+        total_base = total_final / (1 + IVA_RATE)
+        
+        # 2. Calcular el IVA
+        iva_amount = total_final - total_base
+        
+        # 3. Desglosar la Base Imponible en Compra y Fee
+        # El fee es el 7% que se cobró sobre el precio base de la compra
+        precio_base_fee = total_base - (total_base / (1 + FEE_RATE))
+        precio_base_compra = total_base - precio_base_fee
+        
         BsDexchangeRate = customer.BsDExchangeRate
-        total_fee = payment.sale.fee
         amount_discount = payment.sale.discount
 
-        print(IVA, base_amount_no_IVA, amount_IVA, BsDexchangeRate, total_fee, amount_discount)
+        total_fee = (payment.sale.event_rel.Fee or 0) * total_price / 100
+
+        print(f"IVA_RATE: {IVA_RATE}, total_base: {total_base}, iva_amount: {iva_amount}, fee_base: {precio_base_fee}, purchase_base: {precio_base_compra}")
 
         sale_data = {
             'sale_id': str(payment.sale.sale_id),
@@ -411,9 +448,12 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             'date': payment.sale.event_rel.date_string,
             'hour': payment.sale.event_rel.hour_string,
             'price': round(payment.sale.price / 100, 2),
-            'iva_amount': round(amount_IVA / 100, 2),
-            'net_amount': round(base_amount_no_IVA / 100, 2),
-            'total_abono': round(payment.Amount / 100, 2),
+            'fee': round(precio_base_fee / 100, 2),  # Fee base (sin IVA)
+            'fee_base': round(precio_base_fee / 100, 2),  # El 7% extraído de la base
+            'purchase_base': round(precio_base_compra / 100, 2),  # El neto real del producto
+            'iva_amount': round(iva_amount / 100, 2),  # 16% del total_base
+            'net_amount': round(total_base / 100, 2),  # Base Imponible Total (compra + fee antes de IVA)
+            'total_abono': round(total_final / 100, 2),
             'payment_method': payment.PaymentMethod,
             'payment_date': payment.PaymentDate,
             'reference': payment.Reference or 'N/A',

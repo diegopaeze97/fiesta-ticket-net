@@ -3693,9 +3693,25 @@ def approve_abono():
                             'ticket_link': qr_link
                         })
 
-                IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                amount_no_IVA = int(round(received / (1 + IVA), 2))
-                amount_IVA = received - amount_no_IVA
+                # Cálculo del desglose fiscal según nueva lógica:
+                # IVA_PERCENTAGE: 1600 = 16%, FEE_PERCENTAGE: 700 = 7%
+                IVA_RATE = current_app.config.get('IVA_PERCENTAGE', 0) / 10000  # 1600 -> 0.16
+                FEE_RATE = current_app.config.get('FEE_PERCENTAGE', 700) / 10000  # 700 -> 0.07
+                
+                # Total final pagado (en centavos)
+                total_final = received
+                
+                # 1. Hallar la Base Imponible Total (incluye compra + fee antes del IVA)
+                total_base = total_final / (1 + IVA_RATE)
+                
+                # 2. Calcular el IVA
+                iva_amount = total_final - total_base
+                
+                # 3. Desglosar la Base Imponible en Compra y Fee
+                # El fee es el 7% que se cobró sobre el precio base de la compra
+                precio_base_fee = total_base - (total_base / (1 + FEE_RATE))
+                precio_base_compra = total_base - precio_base_fee
+
                 if PaymentMethod.lower in utils.usd_payment_methods:
                     currency = 'usd'
                 else:
@@ -3708,9 +3724,12 @@ def approve_abono():
                     'date': payment.sale.event_rel.date_string,
                     'hour': payment.sale.event_rel.hour_string,
                     'price':  round(payment.sale.price / 100, 2),
-                    'iva_amount': round(amount_IVA / 100, 2),
-                    'net_amount': round(amount_no_IVA / 100, 2),
-                    'total_abono': round(received / 100, 2),
+                    'fee': round(precio_base_fee / 100, 2),  # Fee base (sin IVA)
+                    'fee_base': round(precio_base_fee / 100, 2),  # El 7% extraído de la base
+                    'purchase_base': round(precio_base_compra / 100, 2),  # El neto real del producto
+                    'iva_amount': round(iva_amount / 100, 2),  # 16% del total_base
+                    'net_amount': round(total_base / 100, 2),  # Base Imponible Total (compra + fee antes de IVA)
+                    'total_abono': round(total_final / 100, 2),
                     'payment_method': PaymentMethod,
                     'payment_date': PaymentDate,
                     'reference': PaymentReference,
