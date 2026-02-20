@@ -3565,6 +3565,7 @@ def approve_abono():
                         continue
 
                 total_fee= 0
+                tickets_data_for_pdf = []
 
                 tickets_a_emitir = Ticket.query.filter(Ticket.ticket_id.in_(ticket_ids)).all()
                 total_price = payment.sale.price
@@ -3669,7 +3670,28 @@ def approve_abono():
                     total_fee += ticket.fee if ticket.fee else 0
 
                     if event.type_of_event == 'espectaculo':
-                        utils.sendqr_for_SuccessfulTicketEmission(current_app.config, db, mail, customer, sale_data, s3, ticket)
+                        # Generate QR code and upload to S3
+                        qr_gen = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+                        qr_gen.add_data(qr_link)
+                        qr_gen.make(fit=True)
+                        qr_image = qr_gen.make_image(fill_color="black", back_color="white")
+                        qr_url = utils.update_user_gallery_newQR(qr_image, db, ticket, s3)
+
+                        section_name = ticket.seat.section.name if (ticket.seat and ticket.seat.section) else "N/A"
+                        section_name = section_name.replace('20_', ' ')
+                        tickets_data_for_pdf.append({
+                            'ticket_id': ticket.ticket_id,
+                            'section': section_name,
+                            'row': sale_data['row'],
+                            'number': sale_data['number'],
+                            'price': sale_data['price'],
+                            'fee': sale_data['fee'],
+                            'discount': sale_data['discount'],
+                            'total': sale_data['total'],
+                            'localizador': localizador,
+                            'qr_link': qr_url,
+                            'ticket_link': qr_link
+                        })
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
                 amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
@@ -3731,7 +3753,21 @@ def approve_abono():
                     db.session.rollback() 
                     return {"error": f"Fallo al actualizar DB: {e}"}, 500
 
-                utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
+                event_data_for_pdf = {
+                    'name': event.name or "N/A",
+                    'venue': event.venue.name if event.venue else "N/A",
+                    'date': event.date_string or "N/A",
+                    'hour': event.hour_string or "N/A",
+                    'sale_locator': payment.sale.saleLocator or "N/A"
+                }
+                pdf_bytes = None
+                if tickets_data_for_pdf:
+                    try:
+                        pdf_bytes = utils_backend.generate_tickets_pdf(customer, event_data_for_pdf, tickets_data_for_pdf)
+                    except Exception as e:
+                        logging.error(f"Error generando PDF de tickets para factura: {e}")
+
+                utils.sendnotification_for_CompletedPaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data, pdf_bytes=pdf_bytes)
             else:
 
                 sale_data = {

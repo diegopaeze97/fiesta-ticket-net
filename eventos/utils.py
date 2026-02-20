@@ -246,7 +246,7 @@ def sendnotification_for_CartAdding(config, db, mail, user, Tickets, event):
         logging.error(f"Error sending email: {e}")
         #db.session.rollback()   
 
-def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets, sale_data):
+def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets, sale_data, pdf_bytes=None):
     try:
         recipient = user.Email
 
@@ -266,6 +266,17 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
 
+        if pdf_bytes:
+            event_name = sale_data.get('event', 'evento').replace(' ', '_')
+            sale_id = sale_data.get('sale_id', 'boletos')
+            pdf_filename = f"entradas_{event_name}_{sale_id}.pdf"
+            pdf_filename = "".join(c for c in pdf_filename if c.isalnum() or c in ('_', '-', '.'))
+        else:
+            pdf_filename = None
+
+        if pdf_bytes and pdf_filename:
+            msg.attach(pdf_filename, 'application/pdf', pdf_bytes)
+
         mail.send(msg)
 
         subject_admin = f'Notificación de compra completada para {sale_data["event"]} - Fiesta Ticket'
@@ -273,6 +284,9 @@ def sendnotification_for_CompletedPaymentStatus(config, db, mail, user, Tickets,
         msg = Message(subject_admin, sender=config["MAIL_USERNAME"], recipients=[config["MAIL_USERNAME"]])
         msg_html = render_template(template, Tickets=Tickets, sale_data=sale_data, user_data=user_data)
         msg.html = msg_html
+
+        if pdf_bytes and pdf_filename:
+            msg.attach(pdf_filename, 'application/pdf', pdf_bytes)
 
         mail.send(msg)
 
