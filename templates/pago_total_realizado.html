@@ -149,26 +149,32 @@
                                                 </td>
                                             </tr>
                                             <tr>
-                                                <td style="border-bottom: 1px solid #eee;">Subtotal:</td>
+                                                <td style="border-bottom: 1px solid #eee;">Precio Base Compra:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{ (sale_data['purchase_base']*sale_data['exchange_rate_bsd']) | round(2) }} BsD
+                                                </td>
+                                            </tr>
+                                            {% if sale_data['fee_base'] and sale_data['fee_base'] > 0 %}
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">Fee de Servicio (7%):</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                    {{ (sale_data['fee_base']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
+                                            </tr>
+                                            {% endif %}
+                                            <tr>
+                                                <td style="border-bottom: 1px solid #eee;">Base Imponible:</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
                                                     {{ (sale_data['net_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD
                                                 </td>
                                             </tr>
-                                            {% if sale_data['fee'] and sale_data['fee'] > 0 %}
-                                            <tr>
-                                                <td style="border-bottom: 1px solid #eee;">Fee de Servicio:</td>
-                                                <td align="right" style="border-bottom: 1px solid #eee;">
-                                                    {{ (sale_data['fee']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
-                                            </tr>
-                                            {% endif %}
                                             <tr>
                                                 <td style="border-bottom: 1px solid #eee;">IVA (16%):</td>
                                                 <td align="right" style="border-bottom: 1px solid #eee;">
                                                     {{ (sale_data['iva_amount']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                             <tr>
-                                                <td style="border-bottom: 1px solid #eee;">Total:</td>
-                                                <td align="right" style="border-bottom: 1px solid #eee;">
+                                                <td style="border-bottom: 1px solid #eee; font-weight: bold;">Total:</td>
+                                                <td align="right" style="border-bottom: 1px solid #eee; font-weight: bold;">
                                                     {{ (sale_data['total_abono']*sale_data['exchange_rate_bsd']) | round(2) }} BsD</td>
                                             </tr>
                                         </table>

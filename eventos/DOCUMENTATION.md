@@ -530,8 +530,7 @@ logging.exception("Error con stack trace")
 
 - Todos los precios se almacenan en **centavos** (integer)
 - Se dividen por 100 solo al mostrar al usuario
-- El IVA se calcula como: `base_amount = total / (1 + IVA_PERCENTAGE/10000)`
-- El fee de servicio se calcula como porcentaje del precio del ticket
+- El Fee de Servicio está incluido en la base imponible antes de calcular el IVA
 
 #### Configuración del IVA
 
@@ -546,15 +545,58 @@ La variable de entorno `IVA_PERCENTAGE` es un número entero entre 0 y 10000 don
 
 > **Formato:** Similar a los precios en centavos, `IVA_PERCENTAGE = 1600` significa 16.00%
 
-#### Fórmulas
+#### Configuración del Fee de Servicio
+
+La variable de entorno `FEE_PERCENTAGE` es un número entero entre 0 y 10000 (valor por defecto: 700 = 7%):
+
+| Valor | Porcentaje Real |
+|-------|-----------------|
+| `700` | 7% (default) |
+| `500` | 5% |
+| `1000` | 10% |
+
+#### Fórmulas del Desglose Fiscal
+
+El cálculo del desglose fiscal sigue esta lógica (basado en el Total Final conocido):
 
 ```python
-# Cálculo de IVA (donde total incluye IVA)
-# IVA_PERCENTAGE está en formato entero: 1600 = 16%
-IVA = IVA_PERCENTAGE / 10000  # ej: 1600/10000 = 0.16
-base_amount = total / (1 + IVA)  # ej: total / 1.16
-iva_amount = total - base_amount
+# IVA_PERCENTAGE: 1600 = 16% -> 0.16 | FEE_PERCENTAGE: 700 = 7% -> 0.07
+IVA_RATE = config.get('IVA_PERCENTAGE', 0) / 10000  # ej: 1600/10000 = 0.16
+FEE_RATE = config.get('FEE_PERCENTAGE', 700) / 10000  # ej: 700/10000 = 0.07
+
+total_final = payment.Amount / 100  # Monto total pagado
+
+# 1. Hallar la Base Imponible Total (incluye compra + fee antes del IVA)
+total_base = total_final / (1 + IVA_RATE)  # ej: total / 1.16
+
+# 2. Calcular el IVA (16% sobre la base imponible)
+iva_amount = total_final - total_base
+
+# 3. Desglosar la Base Imponible en Compra y Fee
+# El fee es el 7% que se cobró sobre el precio base de la compra
+precio_base_fee = total_base - (total_base / (1 + FEE_RATE))
+precio_base_compra = total_base - precio_base_fee
+
+# Estructura del sale_data para facturación
+sale_data.update({
+    'net_amount': total_base,          # Base Imponible Total (compra + fee)
+    'iva_amount': iva_amount,          # 16% de IVA sobre total_base
+    'fee_base': precio_base_fee,       # El 7% extraído de la base
+    'purchase_base': precio_base_compra # El neto real del producto
+})
 ```
+
+#### Ejemplo Práctico
+
+Para un pago total de $116.00:
+
+| Concepto | Cálculo | Valor |
+|----------|---------|-------|
+| **Total Final** | (dato) | $116.00 |
+| **Base Imponible** | $116 / 1.16 | $100.00 |
+| **IVA (16%)** | $116 - $100 | $16.00 |
+| **Fee Base (7%)** | $100 - ($100 / 1.07) | $6.54 |
+| **Precio Base Compra** | $100 - $6.54 | $93.46 |
 
 ### 8. Tasa de Cambio
 

@@ -66,6 +66,8 @@ def createApp():
     # IVA_PERCENTAGE es un número entero entre 0 y 10000 donde 1600 = 16%
     # Ejemplo: 1600 representa 16%, 500 representa 5%, 10000 representa 100%
     app.config['IVA_PERCENTAGE'] = int(os.environ.get('IVA_PERCENTAGE', 0))
+    # FEE_PERCENTAGE es el porcentaje de fee de servicio (700 = 7%)
+    app.config['FEE_PERCENTAGE'] = int(os.environ.get('FEE_PERCENTAGE', 700))
 
 
     #websites
