@@ -365,7 +365,7 @@ def handle_checkout_completed(data, config):
                     utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
 
             IVA = config.get('IVA_PERCENTAGE', 0) / 100
-            amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
+            amount_no_IVA = int(round(received / (1 + IVA), 2))
             amount_IVA = received - amount_no_IVA
 
             addons = None
@@ -391,16 +391,16 @@ def handle_checkout_completed(data, config):
                 'venue': payment.sale.event_rel.venue.name,
                 'date': payment.sale.event_rel.date_string,
                 'hour': payment.sale.event_rel.hour_string,
-                'price': round(payment.sale.price*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
-                'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
-                'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
-                'total_abono': round(received*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(received / 100, 2),
+                'price': round(payment.sale.price / 100, 2),
+                'iva_amount': round(amount_IVA / 100, 2),
+                'net_amount': round(amount_no_IVA / 100, 2),
+                'total_abono': round(received / 100, 2),
                 'payment_method': 'Tarjeta de Crédito',
                 'payment_date': today.strftime('%d-%m-%Y'),
                 'reference': payment_reference,
                 'link_reserva': reserva_link,
                 'localizador': payment.sale.saleLocator,
-                'exchange_rate_bsd': round(BsDexchangeRate/100, 2),
+                'exchange_rate_bsd': round(BsDexchangeRate / 100, 2),
                 'status': 'aprobado',
                 'title': 'Tu pago ha sido procesado exitosamente',
                 'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
