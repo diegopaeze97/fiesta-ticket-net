@@ -530,25 +530,28 @@ logging.exception("Error con stack trace")
 
 - Todos los precios se almacenan en **centavos** (integer)
 - Se dividen por 100 solo al mostrar al usuario
-- El IVA se calcula como: `base_amount = total / (1 + IVA_PERCENTAGE/100)`
+- El IVA se calcula como: `base_amount = total / (1 + IVA_PERCENTAGE/10000)`
 - El fee de servicio se calcula como porcentaje del precio del ticket
 
 #### Configuración del IVA
 
-La variable de entorno `IVA_PERCENTAGE` debe configurarse como un número entero representando el porcentaje:
+La variable de entorno `IVA_PERCENTAGE` es un número entero entre 0 y 10000 donde:
 
-| Valor Correcto | Valor Incorrecto | Resultado |
-|----------------|------------------|-----------|
-| `16` | `0.16` | Subtotal ≈ 86%, IVA ≈ 14% ✓ |
-| `16` | `1600` | Subtotal ≈ 6%, IVA ≈ 94% ✗ (invertido) |
+| Valor | Porcentaje Real |
+|-------|-----------------|
+| `1600` | 16% |
+| `500` | 5% |
+| `2100` | 21% |
+| `10000` | 100% |
 
-> **⚠️ IMPORTANTE:** Si las facturas muestran el IVA y el Subtotal invertidos (IVA mucho mayor que el Subtotal), verificar que `IVA_PERCENTAGE` esté configurado correctamente. Debe ser `16` para 16% de IVA, NO `1600` ni `0.16`.
+> **Formato:** Similar a los precios en centavos, `IVA_PERCENTAGE = 1600` significa 16.00%
 
 #### Fórmulas
 
 ```python
 # Cálculo de IVA (donde total incluye IVA)
-IVA = IVA_PERCENTAGE / 100  # ej: 16/100 = 0.16
+# IVA_PERCENTAGE está en formato entero: 1600 = 16%
+IVA = IVA_PERCENTAGE / 10000  # ej: 1600/10000 = 0.16
 base_amount = total / (1 + IVA)  # ej: total / 1.16
 iva_amount = total - base_amount
 ```

@@ -82,7 +82,8 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             }
             tickets.append(sale_data)
             
-        IVA = config.get('IVA_PERCENTAGE', 0) / 100
+        # IVA_PERCENTAGE está en formato entero: 1600 = 16%, por lo que dividimos entre 10000
+        IVA = config.get('IVA_PERCENTAGE', 0) / 10000
         base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
         amount_IVA = payment.Amount - base_amount_no_IVA
         BsDexchangeRate = customer.BsDExchangeRate
@@ -396,7 +397,8 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             }
             tickets.append(sale_data)
             
-        IVA = config.get('IVA_PERCENTAGE', 0) / 100
+        # IVA_PERCENTAGE está en formato entero: 1600 = 16%, por lo que dividimos entre 10000
+        IVA = config.get('IVA_PERCENTAGE', 0) / 10000
         base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
         amount_IVA = payment.Amount - base_amount_no_IVA
         BsDexchangeRate = customer.BsDExchangeRate

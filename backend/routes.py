@@ -3693,7 +3693,8 @@ def approve_abono():
                             'ticket_link': qr_link
                         })
 
-                IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
+                # IVA_PERCENTAGE está en formato entero: 1600 = 16%, por lo que dividimos entre 10000
+                IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 10000
                 amount_no_IVA = int(round(received / (1 + IVA), 2))
                 amount_IVA = received - amount_no_IVA
                 if PaymentMethod.lower in utils.usd_payment_methods:

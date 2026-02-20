@@ -364,7 +364,8 @@ def handle_checkout_completed(data, config):
                 if event.type_of_event != 'paquete_turistico':
                     utils_eventos.sendqr_for_SuccessfulTicketEmission(config, db, mail, customer, sale_data, s3, ticket)
 
-            IVA = config.get('IVA_PERCENTAGE', 0) / 100
+            # IVA_PERCENTAGE está en formato entero: 1600 = 16%, por lo que dividimos entre 10000
+            IVA = config.get('IVA_PERCENTAGE', 0) / 10000
             amount_no_IVA = int(round(received / (1 + IVA), 2))
             amount_IVA = received - amount_no_IVA
 
