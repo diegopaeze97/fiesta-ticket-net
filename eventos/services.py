@@ -105,6 +105,8 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
         amount_discount = payment.sale.discount
         currency = 'bsd'
 
+        total_fee = (payment.sale.event_rel.Fee or 0) * total_price / 100
+
         print(f"IVA_RATE: {IVA_RATE}, total_base: {total_base}, iva_amount: {iva_amount}, fee_base: {precio_base_fee}, purchase_base: {precio_base_compra}")
 
         sale_data = {
@@ -434,6 +436,8 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
         
         BsDexchangeRate = customer.BsDExchangeRate
         amount_discount = payment.sale.discount
+
+        total_fee = (payment.sale.event_rel.Fee or 0) * total_price / 100
 
         print(f"IVA_RATE: {IVA_RATE}, total_base: {total_base}, iva_amount: {iva_amount}, fee_base: {precio_base_fee}, purchase_base: {precio_base_compra}")
 
