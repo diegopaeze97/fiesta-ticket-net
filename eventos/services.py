@@ -406,7 +406,7 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             'venue': payment.sale.event_rel.venue.name,
             'date': payment.sale.event_rel.date_string,
             'hour': payment.sale.event_rel.hour_string,
-            'price': round(payment.sale.price / 1000, 2),
+            'price': round(payment.sale.price / 100, 2),
             'iva_amount': round(amount_IVA / 100, 2),
             'net_amount': round(amount_no_IVA / 100, 2),
             'total_abono': round(payment.Amount / 100, 2),
