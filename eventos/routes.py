@@ -2051,7 +2051,7 @@ def validate_c2p():
                 "message": "Monto inválido"
             }), 400
         
-        today = datetime.now().strftime("%d/%m/%Y")
+        today = datetime.now().date()
 
         ENVIRONMENT = current_app.config.get('ENVIRONMENT').lower()
             
