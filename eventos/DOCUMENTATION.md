@@ -533,6 +533,26 @@ logging.exception("Error con stack trace")
 - El IVA se calcula como: `base_amount = total / (1 + IVA_PERCENTAGE/100)`
 - El fee de servicio se calcula como porcentaje del precio del ticket
 
+#### Configuración del IVA
+
+La variable de entorno `IVA_PERCENTAGE` debe configurarse como un número entero representando el porcentaje:
+
+| Valor Correcto | Valor Incorrecto | Resultado |
+|----------------|------------------|-----------|
+| `16` | `0.16` | Subtotal ≈ 86%, IVA ≈ 14% ✓ |
+| `16` | `1600` | Subtotal ≈ 6%, IVA ≈ 94% ✗ (invertido) |
+
+> **⚠️ IMPORTANTE:** Si las facturas muestran el IVA y el Subtotal invertidos (IVA mucho mayor que el Subtotal), verificar que `IVA_PERCENTAGE` esté configurado correctamente. Debe ser `16` para 16% de IVA, NO `1600` ni `0.16`.
+
+#### Fórmulas
+
+```python
+# Cálculo de IVA (donde total incluye IVA)
+IVA = IVA_PERCENTAGE / 100  # ej: 16/100 = 0.16
+base_amount = total / (1 + IVA)  # ej: total / 1.16
+iva_amount = total - base_amount
+```
+
 ### 8. Tasa de Cambio
 
 - La tasa de cambio BsD/USD se obtiene de APIs externas

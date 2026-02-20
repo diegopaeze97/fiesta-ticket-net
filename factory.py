@@ -63,7 +63,13 @@ def createApp():
     app.config['FIESTATRAVEL_API_URL'] = os.environ.get('FIESTATRAVEL_API_URL')
     
     #taxes 
-    app.config['IVA_PERCENTAGE'] = int(os.environ.get('IVA_PERCENTAGE', 0))  # Porcentaje de impuestos, por defecto 0 si no está definido
+    # IVA_PERCENTAGE debe ser un número entero representando el porcentaje (ej: 16 para 16%)
+    # IMPORTANTE: No usar 0.16 ni 1600, solo el valor entero del porcentaje
+    iva_raw = int(os.environ.get('IVA_PERCENTAGE', 0))
+    if iva_raw > 100:
+        import logging
+        logging.warning(f"IVA_PERCENTAGE={iva_raw} parece incorrecto. Debe ser un porcentaje entre 0 y 100 (ej: 16 para 16%)")
+    app.config['IVA_PERCENTAGE'] = iva_raw
 
 
     #websites
