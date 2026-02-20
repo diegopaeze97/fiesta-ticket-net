@@ -83,12 +83,14 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             tickets.append(sale_data)
             
         IVA = config.get('IVA_PERCENTAGE', 0) / 100
-        amount_no_IVA = int(round(payment.Amount / (1 + (IVA)/100), 2))
-        amount_IVA = payment.Amount - amount_no_IVA
+        base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
+        amount_IVA = payment.Amount - base_amount_no_IVA
         BsDexchangeRate = customer.BsDExchangeRate
         total_fee = payment.sale.fee
         amount_discount = payment.sale.discount
         currency = 'bsd'
+
+        print(IVA, base_amount_no_IVA, amount_IVA, BsDexchangeRate, total_fee, amount_discount)
 
         sale_data = {
             'sale_id': str(payment.sale.sale_id),
@@ -96,16 +98,16 @@ def bvc_api_verification_success(config, tickets_en_carrito, payment, customer, 
             'venue': payment.sale.event_rel.venue.name,
             'date': payment.sale.event_rel.date_string,
             'hour': payment.sale.event_rel.hour_string,
-            'price': round(payment.sale.price*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.sale.price / 100, 2),
-            'iva_amount': round(amount_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_IVA / 100, 2),
-            'net_amount': round(amount_no_IVA*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(amount_no_IVA / 100, 2),
-            'total_abono': round(payment.Amount*BsDexchangeRate / 10000, 2) if currency == 'bsd' else round(payment.Amount / 100, 2),
+            'price': round(payment.sale.price / 100, 2),
+            'iva_amount': round(amount_IVA / 100, 2),       
+            'net_amount': round(base_amount_no_IVA / 100, 2),
+            'total_abono': round(payment.Amount / 100, 2),
             'payment_method': payment.PaymentMethod,
             'payment_date': payment.PaymentDate.strftime('%d-%m-%Y'),
             'reference': payment.Reference or 'N/A',
             'link_reserva': payment.sale.saleLink,
             'localizador': payment.sale.saleLocator,
-            'exchange_rate_bsd': round(BsDexchangeRate/100, 2),
+            'exchange_rate_bsd': round(BsDexchangeRate / 100, 2),
             'status': 'aprobado',
             'title': 'Tu pago ha sido procesado exitosamente',
             'subtitle': 'Gracias por tu compra, a continuación encontrarás los detalles de tu factura',
@@ -394,11 +396,13 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             tickets.append(sale_data)
             
         IVA = config.get('IVA_PERCENTAGE', 0) / 100
-        amount_no_IVA = int(round(payment.Amount / (1 + (IVA)/100), 2))
-        amount_IVA = payment.Amount - amount_no_IVA
+        base_amount_no_IVA = int(round(payment.Amount / (1 + IVA), 2))
+        amount_IVA = payment.Amount - base_amount_no_IVA
         BsDexchangeRate = customer.BsDExchangeRate
         total_fee = payment.sale.fee
         amount_discount = payment.sale.discount
+
+        print(IVA, base_amount_no_IVA, amount_IVA, BsDexchangeRate, total_fee, amount_discount)
 
         sale_data = {
             'sale_id': str(payment.sale.sale_id),
@@ -408,7 +412,7 @@ def ticket_approval_c2p(tickets_en_carrito, total_discount, total_price, validat
             'hour': payment.sale.event_rel.hour_string,
             'price': round(payment.sale.price / 100, 2),
             'iva_amount': round(amount_IVA / 100, 2),
-            'net_amount': round(amount_no_IVA / 100, 2),
+            'net_amount': round(base_amount_no_IVA / 100, 2),
             'total_abono': round(payment.Amount / 100, 2),
             'payment_method': payment.PaymentMethod,
             'payment_date': payment.PaymentDate,

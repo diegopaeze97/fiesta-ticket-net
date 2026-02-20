@@ -3694,7 +3694,7 @@ def approve_abono():
                         })
 
                 IVA = current_app.config.get('IVA_PERCENTAGE', 0) / 100
-                amount_no_IVA = int(round(received / (1 + (IVA)/100), 2))
+                amount_no_IVA = int(round(received / (1 + IVA), 2))
                 amount_IVA = received - amount_no_IVA
                 if PaymentMethod.lower in utils.usd_payment_methods:
                     currency = 'usd'
