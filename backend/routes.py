@@ -122,9 +122,9 @@ def register():
     lastname = bleach.clean(request.json.get("lastname", ""), strip=True)
     gender = bleach.clean(request.json.get("gender", ""), strip=True)
 
-    password = request.json.get("password").strip()
-    confirm_password = request.json.get("confirmPassword").strip()
-    phone = request.json.get("phone").strip()
+    password = (request.json.get("password") or "").strip()
+    confirm_password = (request.json.get("confirmPassword") or "").strip()
+    phone = (request.json.get("phone") or "").strip()
     countryCode = bleach.clean(request.json.get("countryCode", ""), strip=True)
     email = bleach.clean(request.json.get("email", "").strip().lower(), strip=True)
     birthday = request.json.get("Birthdate")

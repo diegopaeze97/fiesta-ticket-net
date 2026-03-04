@@ -1,6 +1,7 @@
 from functools import wraps
 from flask import jsonify, g
 from flask_jwt_extended import verify_jwt_in_request, get_jwt
+from flask_jwt_extended.exceptions import NoAuthorizationError, InvalidHeaderError, WrongTokenError
 from jwt import ExpiredSignatureError, InvalidTokenError  # de PyJWT
 import logging
 
@@ -60,6 +61,13 @@ def roles_required(allowed_roles):
 
                 return fn(*args, **kwargs)
 
+            except (NoAuthorizationError, InvalidHeaderError, WrongTokenError):
+                # Missing or malformed token
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Missing authorization token',
+                    'redirect': '/signin'
+                }), 401
             except ExpiredSignatureError:
                 logging.warning("⚠️ JWT token has expired.")
                 return jsonify({

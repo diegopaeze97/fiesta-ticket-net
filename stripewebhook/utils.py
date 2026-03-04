@@ -529,9 +529,9 @@ def sendnotification_checkout_failed(config, db, mail, user, Tickets, event, ses
         message_admin += (
             f'\n---\n'
             f'## 💰 Detalles del Pago\n'
-            f'- **Monto Total Intentado:** ${round(session.get('amount_total', 0)/100, 2)}\n'
+            f'- **Monto Total Intentado:** ${round(session.get("amount_total", 0)/100, 2)}\n'
             f'- **Método de Pago:** Tarjeta de credito / Stripe\n'
-            f'- **Referencia/Link Stripe:** {session.get('payment_intent') or session.get('id')}\n\n'
+            f'- **Referencia/Link Stripe:** {session.get("payment_intent") or session.get("id")}\n\n'
             f'---\n'
             f'## 🧾 Notas del Sistema\n'
             f'- El intento de pago fue rechazado, cancelado o no confirmado dentro del tiempo límite.\n'
