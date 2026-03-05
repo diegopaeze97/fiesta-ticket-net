@@ -3311,46 +3311,127 @@ def new_abono():
     finally:
         db.session.close()
     
-@backend.route('/pending-payments', methods=['GET']) #para ver los pagos que quedan por ser confirmados
+@backend.route('/pending-payments', methods=['GET'])
 @roles_required(allowed_roles=["admin"])
 def pending_payments():
     try:
-        payments = Payments.query.options(
-            load_only(Payments.PaymentID, Payments.Amount, Payments.PaymentDate, Payments.PaymentMethod, Payments.Reference, Payments.Status, Payments.SaleID),
-            joinedload(Payments.sale).load_only(Sales.sale_id, Sales.price, Sales.paid, Sales.saleLocator, Sales.saleLink)
-            .joinedload(Sales.customer).load_only(EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email),
-            joinedload(Payments.sale).joinedload(Sales.event_rel).load_only(Event.name)
-        ).filter(Payments.Status == "pendiente").all()
+        # Obtener parámetros de filtrado
+        from_date_str = request.args.get('from_date', '')
+        to_date_str = request.args. get('to_date', '')
+        statuses_str = request. args.get('status', '')
+        search_term = request.args.get('search_term', '')
+        
+        # Parse fechas
+        from_date = None
+        to_date = None
+        
+        if from_date_str: 
+            from_date_str = from_date_str.split('T')[0]  # Extraer solo la parte de la fecha
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'message': 'Formato de from_date inválido. Usa YYYY-MM-DD.', 'status': 'error'}), 400
+        
+        if to_date_str:
+            to_date_str = to_date_str.split('T')[0]  # Extraer solo la parte de la fecha
+            try: 
+                to_date = datetime. strptime(to_date_str, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'message': 'Formato de to_date inválido. Usa YYYY-MM-DD.', 'status':  'error'}), 400
 
+        # Parse search term
+        search_term = search_term.strip().lower()
+
+        # Parse statuses (separados por coma)
+        statuses = statuses_str.split(',') if statuses_str else []
+        
+        # Construir query con optimizaciones para evitar N+1
+        query = Payments.query. options(
+            joinedload(Payments.sale).joinedload(Sales.customer).load_only(
+                EventsUsers.FirstName, EventsUsers.LastName, EventsUsers.Email
+            ),
+            joinedload(Payments.sale).joinedload(Sales.event_rel).load_only(Event.name),
+            load_only(
+                Payments.PaymentID, Payments.Amount, Payments.Reference,
+                Payments.PaymentDate, Payments.PaymentMethod, Payments.SaleID, Payments.Status
+            )
+        )
+        
+        # Construir filtros dinámicamente
+        filters = []
+        
+        # Si se especifica status, usar esos valores; sino, por defecto "pendiente"
+        if statuses and any(statuses):
+            filters.append(Payments.Status.in_(statuses))
+        else:
+            filters.append(Payments.Status == "pendiente")
+        
+        if from_date:
+            from_date = from_date.date()
+            filters.append(Payments.PaymentDate >= from_date)
+        
+        if to_date: 
+            to_date = to_date.date()
+            filters. append(Payments.PaymentDate <= to_date)
+
+        if search_term:
+            search_filter = or_(
+                func.lower(Payments.Reference).like(f'%{search_term}%'),
+                func.lower(EventsUsers.FirstName).like(f'%{search_term}%'),
+                func.lower(EventsUsers.LastName).like(f'%{search_term}%'),
+                func.lower(EventsUsers.Email).like(f'%{search_term}%'),
+                func.lower(Event.name).like(f'%{search_term}%')
+            )
+            query = query.join(Payments.sale).join(Sales.customer).join(Sales.event_rel)
+            filters.append(search_filter)
+        
+        if filters:
+            query = query.filter(and_(*filters))
+        
+        # Ordenar por fecha de pago descendente
+        query = query.order_by(Payments.PaymentDate.desc())
+        
+        # Obtener parámetros de paginación
+        page = request.args.get('page', 1, type=int)
+        per_page = 15
+        
+        total_pages = query. count() // per_page + (1 if query.count() % per_page > 0 else 0)
+        
+        payments_pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        payments = payments_pagination.items
+        
         payments_list = []
         for payment in payments:
-
-            lastName = payment.sale.customer.LastName if payment.sale.customer and payment.sale.customer.LastName else ''
-
+            firstName = payment.sale.customer.FirstName if payment.sale and payment.sale. customer and payment.sale.customer. FirstName else ''
+            lastName = payment.sale.customer.LastName if payment.sale and payment.sale.customer and payment.sale.customer.LastName else ''
+            
             payments_list.append({
                 "id": payment.PaymentID,
-                "fullname": payment.sale.customer.FirstName + ' ' + lastName if payment.sale and payment.sale.customer else '',
+                "fullname":  firstName + ' ' + lastName if payment.sale and payment.sale.customer else '',
                 "email": payment.sale.customer.Email if payment.sale and payment.sale.customer else '',
                 "event": payment.sale.event_rel.name if payment.sale and payment.sale.event_rel else '',
                 "amount": round(payment.Amount/100, 2),
-                "price": round(payment.sale.price/100, 2),
-                "paid": round(payment.sale.paid/100, 2),
-                "due": round((payment.sale.price - payment.sale.paid)/100, 2),
+                "price": round(payment.sale.price/100, 2) if payment.sale else 0,
+                "paid": round(payment.sale.paid/100, 2) if payment.sale else 0,
+                "due": round((payment.sale.price - payment.sale.paid)/100, 2) if payment.sale else 0,
                 "reference": payment.Reference,
-                "date": payment.PaymentDate.strftime('%d/%m/%Y') if payment.PaymentDate else '',
-                "payment_method": payment.PaymentMethod,
+                "date":  payment.PaymentDate.strftime('%d/%m/%Y') if payment.PaymentDate else '',
+                "payment_method": payment. PaymentMethod,
                 "sale_id": payment.SaleID,
-                "sale_price": payment.sale.price if payment.sale else 0,
+                "sale_price":  payment.sale.price if payment.sale else 0,
                 "sale_paid": payment.sale.paid if payment.sale else 0,
                 "status": payment.Status,
-                "locator": payment.sale.saleLocator if payment.sale else '',
             })
+        
+        return jsonify({
+            "payments": payments_list, 
+            'total_pages': total_pages,
+            'status': 'ok'
+        }), 200
 
-        return jsonify({"payments": payments_list, 'status': 'ok'}), 200
-
-    except Exception as e:
+    except Exception as e: 
         db.session.rollback()
-        logging.error(f"Error al crear evento: {e}")
+        logging.error(f"Error al cargar los pagos:  {e}")
         return jsonify({'message': 'Error al cargar los pagos', 'status': 'error'}), 500
     
 @backend.route('/approve-abono', methods=['POST'])  # ruta del admin para aprobar un abono
