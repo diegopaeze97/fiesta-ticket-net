@@ -3131,8 +3131,6 @@ def customize_reservation():
     
 @backend.route('/new-abono', methods=['POST'])  # Registro de abonos nuevos del cliente
 @roles_required(allowed_roles=["admin", "tiquetero", "seller"])
-@backend.route('/new-abono', methods=['POST'])  # Registro de abonos nuevos del cliente
-@roles_required(allowed_roles=["admin", "tiquetero", "seller"])
 def new_abono():
     try:
         user_id = get_jwt().get("id")
@@ -3146,10 +3144,6 @@ def new_abono():
         PaymentDate = request.json.get('PaymentDate')
         PaymentReference = request.json.get('PaymentReference')
 
-        sale_id = sale_id.replace('?query=', '')
-
-        # 2️⃣ Validación de campos obligatorios
-        if not all([sale_id, PaymentMethod, PaymentDate, PaymentReference]):
         sale_id = sale_id.replace('?query=', '')
 
         # 2️⃣ Validación de campos obligatorios
@@ -3173,29 +3167,11 @@ def new_abono():
             joinedload(Sales.financiamiento_rel)
         ).filter(
             Sales.sale_id == sale_id_int
-        # 3️⃣ Validación del monto recibido
-        if received is None or not isinstance(received, (int, float)) or received <= 0:
-            return jsonify({'message': 'El monto recibido no es válido', 'status': 'error'}), 400
-
-        # 4️⃣ Validar que sale_id sea numérico
-        try:
-            sale_id_int = int(sale_id)
-        except (ValueError, TypeError):
-            return jsonify({'message': 'El ID de venta no es válido', 'status': 'error'}), 400
-        
-        # 5️⃣ Buscar la venta con relaciones cargadas (evita N+1 queries)
-        sale = Sales.query.options(
-            joinedload(Sales.customer),
-            joinedload(Sales.event_rel).joinedload(Event.venue),
-            joinedload(Sales.financiamiento_rel)
-        ).filter(
-            Sales.sale_id == sale_id_int
         ).one_or_none()
 
         if not sale:
             return jsonify({'message': 'No se encontró la venta asociada', 'status': 'error'}), 400
 
-        # 6️⃣ Validaciones de estado de la venta
         # 6️⃣ Validaciones de estado de la venta
         if sale.status == 'cancelado':
             return jsonify({'message': 'La venta está cancelada, no se pueden agregar abonos', 'status': 'error'}), 400
@@ -3249,19 +3225,15 @@ def new_abono():
                 return jsonify({'message': 'El formato de fecha no es válido. Use DD/MM/YYYY', 'status': 'error'}), 400
 
         # 9️⃣ Crear log del abono
-        # 9️⃣ Crear log del abono
         log_for_abono = Logs(
             UserID=user_id,
             Type='abono',
             Timestamp=datetime.now(),
             Details=f"Abono de ${round(received/100, 2)} registrado para la venta {sale_id}",
             SaleID=sale_id_int
-            Details=f"Abono de ${round(received/100, 2)} registrado para la venta {sale_id}",
-            SaleID=sale_id_int
         ) 
         db.session.add(log_for_abono)
         
-        # 🔟 Crear el registro de pago
         # 🔟 Crear el registro de pago
         new_payment_entry = Payments(
             SaleID=sale.sale_id,
@@ -3280,7 +3252,6 @@ def new_abono():
         customer = sale.customer
         event = sale.event_rel
 
-        # Obtener tickets asociados de forma optimizada
         # Obtener tickets asociados de forma optimizada
         Tickets = []
         raw_ticket_ids = sale.ticket_ids or ''
@@ -3343,14 +3314,6 @@ def new_abono():
                     'discount': round(t_discount / 100, 2)
                 }
                 Tickets.append(t)
-
-        # 1️⃣2️⃣ Construir datos de la venta para notificación
-        qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={sale.saleLink}'
-        
-        # Manejar caso donde financiamiento_rel puede ser None
-        deadline_reserva = ''
-        if sale.financiamiento_rel and sale.financiamiento_rel.Deadline:
-            deadline_reserva = sale.financiamiento_rel.Deadline
         
         # 1️⃣2️⃣ Construir datos de la venta para notificación
         qr_link = f'{current_app.config["WEBSITE_FRONTEND_TICKERA"]}/reservas?query={sale.saleLink}'
@@ -3397,9 +3360,6 @@ def new_abono():
         # 1️⃣3️⃣ Enviar notificación al cliente
         if customer:
             try:
-                # 1️⃣3️⃣ Enviar notificación al cliente
-        if customer:
-            try:
                 utils.sendnotification_for_PaymentStatus(current_app.config, db, mail, customer, Tickets, sale_data)
             except Exception as e:
                 logging.error(f"Error enviando notificación de abono: {e}")
@@ -3419,10 +3379,6 @@ def new_abono():
         logging.error(f"Error al registrar abono: {e}")
         return jsonify({'message': 'Error al registrar abono', 'status': 'error'}), 500
     
-    finally:
-        db.session.close()
-    
-@backend.route('/pending-payments', methods=['GET'])
     finally:
         db.session.close()
     
@@ -3629,13 +3585,7 @@ def pending_payments():
             'total_pages': total_pages,
             'status': 'ok'
         }), 200
-            })
         
-        return jsonify({
-            "payments": payments_list, 
-            'total_pages': total_pages,
-            'status': 'ok'
-        }), 200
 
     except Exception as e:  
         db.session.rollback()
