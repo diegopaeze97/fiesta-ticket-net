@@ -23,6 +23,7 @@ from requests.adapters import HTTPAdapter, Retry
 import vol_api.functions as vol_utils
 import qrcode
 import json
+import meta_pixel.capi as meta_capi
 
 events = Blueprint('events', __name__)
 
@@ -718,6 +719,19 @@ def buy_tickets():
         # ---------------------------------------------------------------
         db.session.commit()
         utils.sendnotification_for_CartAdding(current_app.config, db, mail, customer, selected_seats, event)
+
+        # --- Meta CAPI: AddToCart ---
+        tickets_added = [t for t in tickets_sistema if t.status == 'en carrito' and t.customer_id == customer.CustomerID and t.event_id == event.event_id]
+        meta_capi.track_add_to_cart(
+            config=current_app.config,
+            customer=customer,
+            tickets=tickets_added,
+            amount_usd=amount_total,
+            event_name=event.name,
+            client_ip=request.remote_addr,
+            client_user_agent=request.headers.get("User-Agent"),
+        )
+
         return jsonify({
             "message": "Tickets bloqueados exitosamente",
             "status": "ok",
@@ -1277,7 +1291,20 @@ def block_tickets():
                     db.session.commit()
 
                     utils.notify_admins_automatic_pagomovil_verification(current_app.config, db, mail, customer, sale, payment, tickets_en_carrito, MontoBS)
-                    
+
+                    # --- Meta CAPI: Purchase (PagoMóvil auto-verificado) ---
+                    meta_capi.track_purchase(
+                        config=current_app.config,
+                        customer=customer,
+                        tickets=tickets_en_carrito,
+                        amount_usd=total_abono,
+                        event_name=event.name,
+                        payment_method="pagomovil",
+                        order_id=sale.saleLocator,
+                        client_ip=request.remote_addr,
+                        client_user_agent=request.headers.get("User-Agent"),
+                    )
+
                     return jsonify({"message": "Pago verificado y registrado exitosamente", "status": "ok", "tickets": notify_customer['tickets'], "total": total_abono}), 200
                 else:
                     logging.info(f"PagoMóvil no verificado: {data.get('message', 'sin mensaje')}")
@@ -1332,6 +1359,18 @@ def block_tickets():
         # ---------------------------------------------------------------
         WA_utils.send_new_sale_notification(current_app.config, customer, tickets, sale_data, full_phone_number)
         # ---------------------------------------------------------------
+
+        # --- Meta CAPI: InitiateCheckout (pago pendiente de verificación) ---
+        meta_capi.track_initiate_checkout(
+            config=current_app.config,
+            customer=customer,
+            tickets=tickets_en_carrito,
+            amount_usd=total_abono,
+            event_name=event.name,
+            payment_method=payment_method,
+            client_ip=request.remote_addr,
+            client_user_agent=request.headers.get("User-Agent"),
+        )
 
         return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "pending", "tickets": tickets, "total": total_abono}), 200
 
@@ -1776,6 +1815,21 @@ def create_stripe_checkout_session():
             success_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/success?session_id=CHECKOUT_SESSION_ID",
             cancel_url=f"{current_app.config['WEBSITE_FRONTEND_TICKERA']}/confirm-purchase?query={event_id}",
             metadata=metadata,
+        )
+
+        # --- Meta CAPI: InitiateCheckout (sesión de Stripe creada) ---
+        customer = totals["customer"]
+        tickets_en_carrito = totals["tickets_en_carrito"]
+        total_amount_to_pay = totals["total_amount_to_pay"]
+        meta_capi.track_initiate_checkout(
+            config=current_app.config,
+            customer=customer,
+            tickets=tickets_en_carrito,
+            amount_usd=round(total_amount_to_pay / 100, 2),
+            event_name=event.name,
+            payment_method="stripe",
+            client_ip=request.remote_addr,
+            client_user_agent=request.headers.get("User-Agent"),
         )
 
         return jsonify({"url": session.url, "status": "ok"}), 200
@@ -2240,6 +2294,19 @@ def validate_c2p():
                 return approval
             
             db.session.commit()
+
+            # --- Meta CAPI: Purchase (C2P validado exitosamente) ---
+            meta_capi.track_purchase(
+                config=current_app.config,
+                customer=customer,
+                tickets=tickets_en_carrito,
+                amount_usd=round(total_amount_to_pay / 100, 2),
+                event_name=event.name,
+                payment_method="c2p",
+                order_id=localizador,
+                client_ip=request.remote_addr,
+                client_user_agent=request.headers.get("User-Agent"),
+            )
 
             # Transacción válida
             return jsonify({
