@@ -3239,7 +3239,6 @@ def new_abono():
             SaleID=sale.sale_id,
             Amount=received,
             PaymentDate=payment_date,
-            PaymentDate=payment_date,
             PaymentMethod=PaymentMethod,
             Reference=PaymentReference,
             Status='pendiente',
