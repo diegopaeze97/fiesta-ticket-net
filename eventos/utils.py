@@ -132,6 +132,33 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
 
         text = text.replace(' ', '%20').replace('\n', '%0A') #formateo el texto para que se mantengan los saltos de linea y espacios al enviar el mensaje por whatsapp
 
+
+        text = (
+            f'Hola {user.FirstName},\n\n'
+            f'Te escribo de parte de Fiesta Ticket en relacion a tu compra de {len(Tickets)} entradas para el evento {sale_data["event"]}.\n'
+            f'Las entradas de tu reserva son estas:\n'
+            f'{chr(10).join([f"- {ticket["section"].upper()} Fila: {ticket["row"]} Número: {ticket["number"]}" for ticket in Tickets])}\n\n'
+        )
+
+        if sale_data.get("payment_method", "N/A").lower() == "efectivo":
+            text += (
+                f'Para realizar el pago, por favor indicame si deseas realizar el pago en efectivo en una de nuestras oficinas o si deseas que enviemos a alguien a recogerlo.\n\n'
+            )
+
+        elif sale_data.get("payment_method", "N/A").lower() == "cashea":
+            text += (
+                f'Por favor, envíame tu número de cédula para generarte el enlace de Cashea.\n\n'
+                f'Una vez que realices el pago, envíame el comprobante para validar tu reserva y proceder a emitir los boletos.\n\n'
+            )
+
+        elif sale_data.get("payment_method", "N/A").lower() == "zelle":
+            text += (
+                f'Puedes realizar el Zelle al siguiente correo: lauraencinoza@yahoo.com \n\n'
+                f'Por favor, envíame el comprobante de pago para validar tu reserva y proceder a emitir los boletos.\n\n'
+            )
+
+        text = text.replace(' ', '%20').replace('\n', '%0A') #formateo el texto para que se mantengan los saltos de linea y espacios al enviar el mensaje por whatsapp
+
         #ahora se notifica a los admins y tiqueteros
         admin_subject = f'Notificación de bloqueo de reserva para {sale_data["event"]} - Fiesta Ticket'
 
@@ -206,6 +233,9 @@ def sendnotification_for_Blockage(config, db, mail, user, Tickets, sale_data):
             f'Puedes usar el ID de Venta (`{sale_data.get("sale_id", "N/A")}`) o el Email del cliente (`{user.Email}`) para la búsqueda.\n\n'
             f'Gracias por tu pronta gestión,\n'
             f'**Equipo de Fiesta Ticket**\n'
+            f'\n'
+            f'Contacta al cliente directo por WhatsApp:\n\n'
+            f'https://wa.me/{user.PhoneNumber}?text={text}\n'
             f'\n'
             f'Contacta al cliente directo por WhatsApp:\n\n'
             f'https://wa.me/{user.PhoneNumber}?text={text}\n'

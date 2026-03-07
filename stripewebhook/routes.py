@@ -37,5 +37,5 @@ def payment_webhook():
         return jsonify(success=True), 200
 
     except Exception as e:
-        logging(f"⚠️ Error procesando evento {event_type}: {e}")
+        logging.error(f"⚠️ Error procesando evento {event_type}: {e}")
         return jsonify(success=False), 500

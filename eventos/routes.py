@@ -75,6 +75,11 @@ def get_map():
         if not all([event_id, tickera_id, tickera_api_key]):
             return jsonify({"message": "Faltan parámetros"}), 400
 
+        try:
+            event_id_int = int(event_id)
+        except (ValueError, TypeError):
+            return jsonify({"message": "ID de evento inválido"}), 400
+
         # ---------------------------------------------------------------
         # 2️⃣ Buscar el evento en la base de datos
         # ---------------------------------------------------------------
@@ -94,7 +99,7 @@ def get_map():
                 Venue.venue_id,
                 Venue.name
             )
-        ).filter_by(event_id=int(event_id)).one_or_none()
+        ).filter_by(event_id=event_id_int).one_or_none()
 
         db_end = time.perf_counter()
 
@@ -338,7 +343,7 @@ def buy_tickets():
 
         event_id = request.args.get('query', '')
         selected_seats = data.get('tickets', [])
-        discount_code = data.get('discount_code', '').strip()
+        discount_code = (data.get('discount_code') or '').strip()
 
         tickera_id = current_app.config.get('FIESTATRAVEL_TICKERA_USERNAME', '')
         tickera_api_key = current_app.config.get('FIESTATRAVEL_TICKERA_API_KEY', '')
@@ -1733,7 +1738,7 @@ def create_stripe_checkout_session():
                         {
                             "price_data": {
                                 "currency": "usd",
-                                "product_data": {"name": f"Complemento: {addon["FeatureName"]}"},
+                                "product_data": {"name": f"Complemento: {addon['FeatureName']}"},
                                 "unit_amount": addon["FeaturePrice"],
                             },
                             "quantity": addon["Quantity"],

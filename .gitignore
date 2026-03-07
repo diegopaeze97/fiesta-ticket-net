@@ -24,3 +24,6 @@ htmlcov/
 .coverage
 .coverage.*
 *,cover
+
+# Flask-Session runtime files
+flask_session/
