@@ -57,7 +57,7 @@ def verify_p2c():
             return jsonify({"error": "banco requerido"}), 400
         if not telefonoP:
             return jsonify({"error": "telefonoP requerido"}), 400
-        if monto is None:
+        if not monto and monto != 0:
             return jsonify({"error": "monto requerido"}), 400
 
         # Construir dt según especificación - solo las keys esperadas

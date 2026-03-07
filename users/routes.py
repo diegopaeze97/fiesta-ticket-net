@@ -30,9 +30,9 @@ def register():
     firstname = bleach.clean(request.json.get("signupNombre", ""), strip=True)
     lastname = bleach.clean(request.json.get("signupApellido", ""), strip=True)
     cedula = bleach.clean(request.json.get("signupCedula", ""), strip=True)
-    password = request.json.get("signupPassword").strip()
-    confirm_password = request.json.get("signupPasswordRepeat").strip()
-    phone = request.json.get("signupTelefono").strip()
+    password = (request.json.get("signupPassword") or "").strip()
+    confirm_password = (request.json.get("signupPasswordRepeat") or "").strip()
+    phone = (request.json.get("signupTelefono") or "").strip()
     countryCode = bleach.clean(request.json.get("signupCodigoPais", ""), strip=True)
     email = bleach.clean(request.json.get("signupEmail", "").strip().lower(), strip=True)
 
