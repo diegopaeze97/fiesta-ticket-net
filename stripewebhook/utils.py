@@ -11,6 +11,7 @@ import requests
 import os
 import eventos.utils as utils_eventos
 import json
+import meta_pixel.capi as meta_capi
 
 
 
@@ -467,7 +468,18 @@ def handle_checkout_completed(data, config):
         
         db.session.commit()
         logging.info(f"✅ Successfully processed checkout.session.completed for user {user_id}, sale ID {sale.sale_id}")
-        
+
+        # --- Meta CAPI: Purchase (pago Stripe confirmado por webhook) ---
+        meta_capi.track_purchase(
+            config=config,
+            customer=customer,
+            tickets=tickets_en_carrito,
+            amount_usd=round((received or 0) / 100, 2),
+            event_name=event.name,
+            payment_method="stripe",
+            order_id=sale.saleLocator,
+        )
+
         return jsonify({"message": "Tickets bloqueados y venta registrada exitosamente", "status": "ok"}), 200
 
     except SQLAlchemyError as e:
