@@ -91,7 +91,7 @@ def _send_event(pixel_id: str, access_token: str, event_name: str,
             url,
             params={"access_token": access_token},
             json=payload,
-            timeout=5,
+            timeout=10,
         )
         if response.status_code != 200:
             logging.warning(

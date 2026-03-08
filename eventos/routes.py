@@ -21,8 +21,6 @@ import time
 from models import Event
 from requests.adapters import HTTPAdapter, Retry
 import vol_api.functions as vol_utils
-import qrcode
-import json
 import meta_pixel.capi as meta_capi
 
 events = Blueprint('events', __name__)
