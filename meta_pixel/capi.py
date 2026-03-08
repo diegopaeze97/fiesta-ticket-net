@@ -16,6 +16,7 @@ import requests
 
 META_CAPI_URL = "https://graph.facebook.com/v19.0/{pixel_id}/events"
 
+META_TEST_EVENT_CODE = "TEST70650"
 
 def _sha256(value: str) -> str:
     """Return lowercase-stripped SHA-256 hex digest of a string."""
@@ -78,7 +79,8 @@ def _send_event(pixel_id: str, access_token: str, event_name: str,
                 "user_data": user_data,
                 "custom_data": custom_data,
             }
-        ]
+        ],
+        "test_event_code": META_TEST_EVENT_CODE
     }
 
     if event_id:
