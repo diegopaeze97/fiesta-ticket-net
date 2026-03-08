@@ -96,6 +96,10 @@ def createApp():
     # api tasa de cambio bsd
     app.config['X_DOLARVZLA_KEY'] = os.getenv('x-dolarvzla-key')
 
+    # Meta Conversions API (CAPI)
+    app.config['META_PIXEL_ID'] = os.getenv('META_PIXEL_ID')
+    app.config['META_ACCESS_TOKEN'] = os.getenv('META_ACCESS_TOKEN')
+
     db.init_app(app)
     jwt.init_app(app)
     socketio.init_app(app)
